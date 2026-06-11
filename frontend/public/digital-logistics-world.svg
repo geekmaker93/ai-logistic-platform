@@ -1,0 +1,316 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1200" role="img" aria-label="Freight marketplace globe">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0%" stop-color="#02091a"/>
+      <stop offset="100%" stop-color="#071c34"/>
+    </linearGradient>
+    <radialGradient id="ocean" cx="32%" cy="26%" r="75%">
+      <stop offset="0%" stop-color="#68d8f8"/>
+      <stop offset="38%" stop-color="#2588c8"/>
+      <stop offset="72%" stop-color="#0d4a8c"/>
+      <stop offset="100%" stop-color="#061e50"/>
+    </radialGradient>
+    <radialGradient id="land" cx="32%" cy="26%" r="75%">
+      <stop offset="0%" stop-color="#a8d87a"/>
+      <stop offset="45%" stop-color="#5e9a40"/>
+      <stop offset="100%" stop-color="#1e4a14"/>
+    </radialGradient>
+    <linearGradient id="term" x1="1" y1="0" x2="0" y2="0">
+      <stop offset="0%" stop-color="#000d22" stop-opacity="0"/>
+      <stop offset="58%" stop-color="#000d22" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#000d22" stop-opacity="0.58"/>
+    </linearGradient>
+    <radialGradient id="atmo" cx="50%" cy="50%" r="50%">
+      <stop offset="74%" stop-color="#50e8ff" stop-opacity="0"/>
+      <stop offset="90%" stop-color="#50e8ff" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#50e8ff" stop-opacity="0.72"/>
+    </radialGradient>
+    <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#38ccff" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#38ccff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glint" cx="30%" cy="24%" r="26%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.36"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <!-- clip to sphere -->
+    <clipPath id="gc"><circle cx="800" cy="600" r="356"/></clipPath>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1600" height="1200" fill="url(#bg)"/>
+
+  <!-- Stars -->
+  <g fill="#c8f0ff" opacity="0.5">
+    <circle cx="112" cy="88" r="1.4"/><circle cx="248" cy="165" r="1.1"/>
+    <circle cx="432" cy="72" r="1.5"/><circle cx="610" cy="130" r="1.2"/>
+    <circle cx="995" cy="115" r="1.3"/><circle cx="1180" cy="78" r="1.5"/>
+    <circle cx="1348" cy="145" r="1.1"/><circle cx="1510" cy="95" r="1.4"/>
+    <circle cx="165" cy="1050" r="1.3"/><circle cx="720" cy="1070" r="1.4"/>
+    <circle cx="1420" cy="1048" r="1.5"/><circle cx="1545" cy="610" r="1.2"/>
+    <circle cx="40" cy="310" r="1.1"/><circle cx="1570" cy="300" r="1.3"/>
+  </g>
+
+  <!-- Globe outer halo -->
+  <circle cx="800" cy="600" r="448" fill="url(#halo)"/>
+  <!-- Ocean sphere -->
+  <circle cx="800" cy="600" r="356" fill="url(#ocean)"/>
+
+  <!-- Everything clipped to globe -->
+  <g clip-path="url(#gc)">
+
+    <!-- Lat/lon grid — static -->
+    <g fill="none" stroke="#a8eeff" stroke-opacity="0.13" stroke-width="0.9">
+      <ellipse cx="800" cy="600" rx="356" ry="52"/>
+      <ellipse cx="800" cy="600" rx="344" ry="146"/>
+      <ellipse cx="800" cy="600" rx="312" ry="230"/>
+      <ellipse cx="800" cy="600" rx="262" ry="302"/>
+      <ellipse cx="800" cy="600" rx="185" ry="344"/>
+      <line x1="444" y1="600" x2="1156" y2="600"/>
+      <ellipse cx="800" cy="600" rx="62"  ry="356"/>
+      <ellipse cx="800" cy="600" rx="154" ry="356"/>
+      <ellipse cx="800" cy="600" rx="252" ry="356"/>
+      <line x1="800" y1="244" x2="800" y2="956"/>
+    </g>
+
+    <!--
+      ROTATING LAYER — continents + routes + nodes
+      Two identical copies placed side-by-side (offset 712px = one "world width").
+      animateTransform scrolls from x=0 to x=-712 then wraps back instantly.
+      712px chosen so the seam is invisible inside the 356-radius clip.
+    -->
+    <g>
+      <animateTransform attributeName="transform" type="translate"
+                        from="0 0" to="-712 0"
+                        dur="28s" repeatCount="indefinite"
+                        calcMode="linear"/>
+
+      <!-- COPY 1  (centered on globe) -->
+      <g>
+        <!-- Greenland -->
+        <path fill="url(#land)"
+          d="M622 310 C630 298 644 293 658 297 C672 301 682 313 684 328
+             C686 343 680 358 669 366 C657 375 641 375 630 367
+             C618 358 614 343 618 328 Z"/>
+        <!-- North America -->
+        <path fill="url(#land)"
+          d="M538 378 C548 362 562 350 578 344 C596 337 616 340 632 352
+             C647 363 655 380 657 398 C658 415 652 432 640 446
+             C626 462 608 474 592 484 C576 495 562 506 552 520
+             C542 536 537 554 536 572 C534 592 537 610 544 626
+             C548 638 552 648 549 658 C540 652 528 637 514 618
+             C498 598 487 572 484 546 C480 518 485 490 494 464
+             C504 438 518 414 530 394 Z"/>
+        <!-- Central America -->
+        <path fill="url(#land)"
+          d="M549 658 C552 668 553 678 548 686 C544 694 536 699 530 704
+             L526 699 C532 692 536 684 539 676 C542 667 546 660 549 658 Z"/>
+        <!-- South America -->
+        <path fill="url(#land)"
+          d="M554 714 C562 702 576 695 592 694 C608 692 624 699 635 712
+             C647 725 650 742 646 759 C640 780 626 797 616 814
+             C608 830 606 846 610 860 C613 872 619 881 616 891
+             C605 895 592 890 581 880 C567 866 555 846 545 822
+             C534 798 527 770 526 743 C524 716 530 692 540 676 Z"/>
+        <!-- Europe mainland -->
+        <path fill="url(#land)"
+          d="M764 340 C774 328 788 322 804 322 C820 322 834 330 843 344
+             C852 357 853 374 847 389 C840 404 826 413 811 414
+             C795 416 779 407 771 393 C762 378 758 362 764 348 Z"/>
+        <!-- Iberian Peninsula -->
+        <path fill="url(#land)"
+          d="M748 454 C755 443 766 437 779 438 C792 439 803 447 808 459
+             C812 471 810 484 802 493 C793 502 780 504 768 499
+             C755 493 745 481 746 468 Z"/>
+        <!-- Scandinavia -->
+        <path fill="url(#land)"
+          d="M812 302 C820 292 832 288 844 292 C856 296 864 308 864 321
+             C864 334 856 345 845 349 C833 353 820 348 812 338
+             C804 328 804 312 812 302 Z"/>
+        <!-- Africa -->
+        <path fill="url(#land)"
+          d="M792 450 C808 440 828 436 850 440 C874 445 897 460 914 484
+             C934 512 943 548 944 584 C944 620 934 657 917 690
+             C899 724 874 754 849 774 C828 792 806 800 787 796
+             C768 792 751 778 740 756 C728 732 723 702 724 672
+             C725 640 731 608 740 578 C750 546 762 516 769 488
+             C774 466 778 460 792 450 Z"/>
+        <!-- Arabia -->
+        <path fill="url(#land)"
+          d="M894 476 C907 466 924 463 940 470 C956 477 966 494 966 512
+             C966 530 956 547 941 555 C926 563 907 560 895 549
+             C882 537 878 518 882 500 Z"/>
+        <!-- India -->
+        <path fill="url(#land)"
+          d="M964 492 C977 482 994 480 1009 488 C1024 496 1033 513 1031 531
+             C1028 549 1016 563 1001 568 C984 574 966 566 956 551
+             C946 536 945 516 954 501 Z"/>
+        <!-- Terminator shadow -->
+        <rect x="444" y="244" width="712" height="712" fill="url(#term)"/>
+
+        <!-- Trade routes copy 1 -->
+        <g fill="none" stroke="#f5c842" stroke-width="2.6" stroke-linecap="round" stroke-opacity="0.92">
+          <path stroke-dasharray="5 22" d="M580 536 C630 490 702 462 776 450 C820 444 858 450 898 464">
+            <animate attributeName="stroke-dashoffset" from="380" to="0" dur="7s" repeatCount="indefinite"/>
+          </path>
+          <path stroke-dasharray="4 20" d="M556 480 C618 438 698 416 780 412 C838 408 889 418 934 434">
+            <animate attributeName="stroke-dashoffset" from="440" to="0" dur="9.5s" repeatCount="indefinite"/>
+          </path>
+          <path stroke-dasharray="4 20" d="M836 406 C860 440 882 470 906 504 C922 528 932 556 934 582">
+            <animate attributeName="stroke-dashoffset" from="240" to="0" dur="5.8s" repeatCount="indefinite"/>
+          </path>
+          <path stroke-dasharray="4 20" d="M540 598 C628 590 718 586 806 588 C874 590 934 597 994 606">
+            <animate attributeName="stroke-dashoffset" from="460" to="0" dur="11s" repeatCount="indefinite"/>
+          </path>
+          <path stroke-dasharray="4 18" d="M556 636 C554 658 553 682 558 706 C563 728 572 750 578 771">
+            <animate attributeName="stroke-dashoffset" from="160" to="0" dur="5s" repeatCount="indefinite"/>
+          </path>
+          <path stroke-dasharray="4 20" d="M800 454 C826 518 848 580 854 646 C858 694 852 738 836 777">
+            <animate attributeName="stroke-dashoffset" from="380" to="0" dur="10s" repeatCount="indefinite"/>
+          </path>
+          <path stroke-dasharray="4 20" d="M580 752 C628 742 690 738 752 740 C800 742 845 750 885 764">
+            <animate attributeName="stroke-dashoffset" from="340" to="0" dur="8s" repeatCount="indefinite"/>
+          </path>
+        </g>
+        <!-- Port nodes copy 1 -->
+        <g fill="none" stroke="#60f0ff" stroke-opacity="0.3">
+          <circle cx="588" cy="534" r="9"/><circle cx="816" cy="418" r="9"/>
+          <circle cx="899" cy="462" r="9"/><circle cx="955" cy="522" r="8"/>
+          <circle cx="571" cy="640" r="8"/><circle cx="597" cy="768" r="8"/>
+          <circle cx="845" cy="780" r="8"/>
+        </g>
+        <g fill="#9ff8ff">
+          <circle cx="588" cy="534" r="4.5"/><circle cx="816" cy="418" r="4.5"/>
+          <circle cx="899" cy="462" r="4.5"/><circle cx="955" cy="522" r="4.2"/>
+          <circle cx="571" cy="640" r="4.0"/><circle cx="597" cy="768" r="4.0"/>
+          <circle cx="845" cy="780" r="4.0"/>
+        </g>
+        <circle cx="588" cy="534" r="7" fill="none" stroke="#9ff8ff" stroke-width="1.5" stroke-opacity="0.6">
+          <animate attributeName="r" values="7;15;7" dur="3s" repeatCount="indefinite"/>
+          <animate attributeName="stroke-opacity" values="0.6;0;0.6" dur="3s" repeatCount="indefinite"/>
+        </circle>
+        <circle cx="899" cy="462" r="7" fill="none" stroke="#9ff8ff" stroke-width="1.5" stroke-opacity="0.6">
+          <animate attributeName="r" values="7;15;7" dur="3.8s" repeatCount="indefinite"/>
+          <animate attributeName="stroke-opacity" values="0.6;0;0.6" dur="3.8s" repeatCount="indefinite"/>
+        </circle>
+        <circle cx="571" cy="640" r="7" fill="none" stroke="#9ff8ff" stroke-width="1.5" stroke-opacity="0.6">
+          <animate attributeName="r" values="7;15;7" dur="4.4s" repeatCount="indefinite"/>
+          <animate attributeName="stroke-opacity" values="0.6;0;0.6" dur="4.4s" repeatCount="indefinite"/>
+        </circle>
+      </g><!-- /copy 1 -->
+
+      <!-- COPY 2 — shifted right by 712px for seamless wrap -->
+      <g transform="translate(712 0)">
+        <path fill="url(#land)"
+          d="M622 310 C630 298 644 293 658 297 C672 301 682 313 684 328
+             C686 343 680 358 669 366 C657 375 641 375 630 367
+             C618 358 614 343 618 328 Z"/>
+        <path fill="url(#land)"
+          d="M538 378 C548 362 562 350 578 344 C596 337 616 340 632 352
+             C647 363 655 380 657 398 C658 415 652 432 640 446
+             C626 462 608 474 592 484 C576 495 562 506 552 520
+             C542 536 537 554 536 572 C534 592 537 610 544 626
+             C548 638 552 648 549 658 C540 652 528 637 514 618
+             C498 598 487 572 484 546 C480 518 485 490 494 464
+             C504 438 518 414 530 394 Z"/>
+        <path fill="url(#land)"
+          d="M549 658 C552 668 553 678 548 686 C544 694 536 699 530 704
+             L526 699 C532 692 536 684 539 676 C542 667 546 660 549 658 Z"/>
+        <path fill="url(#land)"
+          d="M554 714 C562 702 576 695 592 694 C608 692 624 699 635 712
+             C647 725 650 742 646 759 C640 780 626 797 616 814
+             C608 830 606 846 610 860 C613 872 619 881 616 891
+             C605 895 592 890 581 880 C567 866 555 846 545 822
+             C534 798 527 770 526 743 C524 716 530 692 540 676 Z"/>
+        <path fill="url(#land)"
+          d="M764 340 C774 328 788 322 804 322 C820 322 834 330 843 344
+             C852 357 853 374 847 389 C840 404 826 413 811 414
+             C795 416 779 407 771 393 C762 378 758 362 764 348 Z"/>
+        <path fill="url(#land)"
+          d="M748 454 C755 443 766 437 779 438 C792 439 803 447 808 459
+             C812 471 810 484 802 493 C793 502 780 504 768 499
+             C755 493 745 481 746 468 Z"/>
+        <path fill="url(#land)"
+          d="M812 302 C820 292 832 288 844 292 C856 296 864 308 864 321
+             C864 334 856 345 845 349 C833 353 820 348 812 338
+             C804 328 804 312 812 302 Z"/>
+        <path fill="url(#land)"
+          d="M792 450 C808 440 828 436 850 440 C874 445 897 460 914 484
+             C934 512 943 548 944 584 C944 620 934 657 917 690
+             C899 724 874 754 849 774 C828 792 806 800 787 796
+             C768 792 751 778 740 756 C728 732 723 702 724 672
+             C725 640 731 608 740 578 C750 546 762 516 769 488
+             C774 466 778 460 792 450 Z"/>
+        <path fill="url(#land)"
+          d="M894 476 C907 466 924 463 940 470 C956 477 966 494 966 512
+             C966 530 956 547 941 555 C926 563 907 560 895 549
+             C882 537 878 518 882 500 Z"/>
+        <path fill="url(#land)"
+          d="M964 492 C977 482 994 480 1009 488 C1024 496 1033 513 1031 531
+             C1028 549 1016 563 1001 568 C984 574 966 566 956 551
+             C946 536 945 516 954 501 Z"/>
+        <rect x="444" y="244" width="712" height="712" fill="url(#term)"/>
+        <g fill="none" stroke="#f5c842" stroke-width="2.6" stroke-linecap="round" stroke-opacity="0.92">
+          <path stroke-dasharray="5 22" d="M580 536 C630 490 702 462 776 450 C820 444 858 450 898 464">
+            <animate attributeName="stroke-dashoffset" from="380" to="0" dur="7s" repeatCount="indefinite"/>
+          </path>
+          <path stroke-dasharray="4 20" d="M556 480 C618 438 698 416 780 412 C838 408 889 418 934 434">
+            <animate attributeName="stroke-dashoffset" from="440" to="0" dur="9.5s" repeatCount="indefinite"/>
+          </path>
+          <path stroke-dasharray="4 20" d="M836 406 C860 440 882 470 906 504 C922 528 932 556 934 582">
+            <animate attributeName="stroke-dashoffset" from="240" to="0" dur="5.8s" repeatCount="indefinite"/>
+          </path>
+          <path stroke-dasharray="4 20" d="M540 598 C628 590 718 586 806 588 C874 590 934 597 994 606">
+            <animate attributeName="stroke-dashoffset" from="460" to="0" dur="11s" repeatCount="indefinite"/>
+          </path>
+          <path stroke-dasharray="4 18" d="M556 636 C554 658 553 682 558 706 C563 728 572 750 578 771">
+            <animate attributeName="stroke-dashoffset" from="160" to="0" dur="5s" repeatCount="indefinite"/>
+          </path>
+          <path stroke-dasharray="4 20" d="M800 454 C826 518 848 580 854 646 C858 694 852 738 836 777">
+            <animate attributeName="stroke-dashoffset" from="380" to="0" dur="10s" repeatCount="indefinite"/>
+          </path>
+          <path stroke-dasharray="4 20" d="M580 752 C628 742 690 738 752 740 C800 742 845 750 885 764">
+            <animate attributeName="stroke-dashoffset" from="340" to="0" dur="8s" repeatCount="indefinite"/>
+          </path>
+        </g>
+        <g fill="none" stroke="#60f0ff" stroke-opacity="0.3">
+          <circle cx="588" cy="534" r="9"/><circle cx="816" cy="418" r="9"/>
+          <circle cx="899" cy="462" r="9"/><circle cx="955" cy="522" r="8"/>
+          <circle cx="571" cy="640" r="8"/><circle cx="597" cy="768" r="8"/>
+          <circle cx="845" cy="780" r="8"/>
+        </g>
+        <g fill="#9ff8ff">
+          <circle cx="588" cy="534" r="4.5"/><circle cx="816" cy="418" r="4.5"/>
+          <circle cx="899" cy="462" r="4.5"/><circle cx="955" cy="522" r="4.2"/>
+          <circle cx="571" cy="640" r="4.0"/><circle cx="597" cy="768" r="4.0"/>
+          <circle cx="845" cy="780" r="4.0"/>
+        </g>
+        <circle cx="588" cy="534" r="7" fill="none" stroke="#9ff8ff" stroke-width="1.5" stroke-opacity="0.6">
+          <animate attributeName="r" values="7;15;7" dur="3s" repeatCount="indefinite"/>
+          <animate attributeName="stroke-opacity" values="0.6;0;0.6" dur="3s" repeatCount="indefinite"/>
+        </circle>
+        <circle cx="899" cy="462" r="7" fill="none" stroke="#9ff8ff" stroke-width="1.5" stroke-opacity="0.6">
+          <animate attributeName="r" values="7;15;7" dur="3.8s" repeatCount="indefinite"/>
+          <animate attributeName="stroke-opacity" values="0.6;0;0.6" dur="3.8s" repeatCount="indefinite"/>
+        </circle>
+        <circle cx="571" cy="640" r="7" fill="none" stroke="#9ff8ff" stroke-width="1.5" stroke-opacity="0.6">
+          <animate attributeName="r" values="7;15;7" dur="4.4s" repeatCount="indefinite"/>
+          <animate attributeName="stroke-opacity" values="0.6;0;0.6" dur="4.4s" repeatCount="indefinite"/>
+        </circle>
+      </g><!-- /copy 2 -->
+
+    </g><!-- /rotating layer -->
+
+    <!-- Terminator overlay (static, darkens the left half, stays fixed) -->
+    <rect x="444" y="244" width="356" height="712" fill="url(#term)"/>
+
+  </g><!-- /globe clip -->
+
+  <!-- Atmosphere rim -->
+  <circle cx="800" cy="600" r="356" fill="url(#atmo)"/>
+  <!-- Specular glint -->
+  <circle cx="800" cy="600" r="356" fill="url(#glint)"/>
+  <!-- Vignette -->
+  <rect width="1600" height="1200" fill="#000" opacity="0.20"/>
+</svg>
+

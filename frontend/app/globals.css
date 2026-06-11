@@ -1,0 +1,166 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.journey-starfield {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 12% 18%, rgba(130, 232, 255, 0.22) 0 2px, transparent 3px),
+    radial-gradient(circle at 24% 42%, rgba(130, 232, 255, 0.18) 0 1.5px, transparent 2.5px),
+    radial-gradient(circle at 38% 14%, rgba(130, 232, 255, 0.18) 0 2px, transparent 3px),
+    radial-gradient(circle at 61% 20%, rgba(130, 232, 255, 0.14) 0 1.5px, transparent 2.5px),
+    radial-gradient(circle at 74% 12%, rgba(130, 232, 255, 0.18) 0 2px, transparent 3px),
+    radial-gradient(circle at 87% 23%, rgba(130, 232, 255, 0.18) 0 1.5px, transparent 2.5px),
+    radial-gradient(circle at 18% 82%, rgba(130, 232, 255, 0.16) 0 1.5px, transparent 2.5px),
+    radial-gradient(circle at 44% 88%, rgba(130, 232, 255, 0.18) 0 1.5px, transparent 2.5px),
+    radial-gradient(circle at 69% 84%, rgba(130, 232, 255, 0.16) 0 1.5px, transparent 2.5px),
+    radial-gradient(circle at 91% 78%, rgba(130, 232, 255, 0.16) 0 1.5px, transparent 2.5px);
+}
+
+.journey-globe-stage {
+  animation: journey-globe-stage 18s ease-in-out infinite;
+  transform-origin: center center;
+}
+
+.journey-map-stage {
+  animation: journey-map-stage 18s ease-in-out infinite;
+  opacity: 0;
+  transform-origin: center center;
+}
+
+.journey-rotate-layer {
+  animation: journey-globe-rotation 28s linear infinite;
+}
+
+.journey-route {
+  animation: journey-route-glow 3.8s ease-in-out infinite;
+}
+
+.route-a { animation-delay: 0s; }
+.route-b { animation-delay: 0.6s; }
+.route-c { animation-delay: 1.2s; }
+.route-d { animation-delay: 1.8s; }
+.route-e { animation-delay: 2.4s; }
+.route-f { animation-delay: 3s; }
+
+.journey-map-route {
+  stroke-dasharray: 5 18;
+  animation: journey-map-route-flow 8s linear infinite, journey-map-route-glow 3.6s ease-in-out infinite;
+}
+
+.map-route-a { animation-delay: 0s, 0.2s; }
+.map-route-b { animation-delay: 1.2s, 1s; }
+.map-route-c { animation-delay: 2.1s, 1.8s; }
+.map-route-d { animation-delay: 3.2s, 2.6s; }
+
+@keyframes journey-globe-stage {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  38% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0;
+    transform: scale(2.1);
+  }
+  82% {
+    opacity: 0;
+    transform: scale(2.1);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes journey-map-stage {
+  0% {
+    opacity: 0;
+    transform: scale(1.15);
+  }
+  40% {
+    opacity: 0;
+    transform: scale(1.15);
+  }
+  54% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  78% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  92% {
+    opacity: 0;
+    transform: scale(1.08);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.15);
+  }
+}
+
+@keyframes journey-globe-rotation {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-710px);
+  }
+}
+
+@keyframes journey-route-glow {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 0 rgba(245, 200, 66, 0.1));
+  }
+  50% {
+    filter: drop-shadow(0 0 8px rgba(245, 200, 66, 0.5));
+  }
+}
+
+@keyframes journey-map-route-flow {
+  from {
+    stroke-dashoffset: 220;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes journey-map-route-glow {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 0 rgba(255, 223, 132, 0.08));
+  }
+  50% {
+    filter: drop-shadow(0 0 10px rgba(255, 223, 132, 0.45));
+  }
+}
