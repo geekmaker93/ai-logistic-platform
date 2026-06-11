@@ -845,17 +845,13 @@ export default function CarrierPortalPage() {
   const isSubscriptionActive = subscriptionStatus?.subscription_active ?? Boolean(session?.subscriptionActive);
 
   useEffect(() => {
-    const kickoff = setTimeout(() => {
-      const nextSession = getAuthLiteSession("carrier");
-      if (nextSession?.role !== "carrier") {
-        setReady(true);
-        return;
-      }
-      setSession(nextSession);
+    const nextSession = getAuthLiteSession("carrier");
+    if (nextSession?.role !== "carrier") {
       setReady(true);
-    }, 0);
-
-    return () => clearTimeout(kickoff);
+      return;
+    }
+    setSession(nextSession);
+    setReady(true);
   }, []);
 
   useEffect(() => {
@@ -1100,16 +1096,13 @@ export default function CarrierPortalPage() {
       return;
     }
 
-    const kickoff = setTimeout(() => {
-      void loadShipments();
-    }, 0);
+    void loadShipments();
 
     const timer = setInterval(() => {
       void loadShipments();
     }, 15000);
 
     return () => {
-      clearTimeout(kickoff);
       clearInterval(timer);
     };
   }, [ready, session, isSubscriptionActive, loadShipments]);
@@ -1121,53 +1114,49 @@ export default function CarrierPortalPage() {
 
     const sessionEmail = session.email;
 
-    const kickoff = setTimeout(() => {
-      void (async () => {
-        try {
-          const data = await getUserProfile(sessionEmail, "carrier");
-          const parsedAddress = parseStreetCityStateZip(data.address);
-          setProfile(data);
-          setProfileForm({
-            full_name: data.full_name,
-            company_name: data.company_name,
-            phone: data.phone || "",
-            street: parsedAddress.street,
-            city: parsedAddress.city,
-            state: parsedAddress.state,
-            postal_code: parsedAddress.postalCode,
-            country: parsedAddress.country,
-            bio: data.bio || "",
-            tax_id: data.tax_id || "",
-            dot_number: data.dot_number || "",
-            available_trucks: String(data.carrier_profile?.available_trucks ?? 1),
-            service_regions: data.carrier_profile?.service_regions || [],
-            service_region_state: "",
-            service_region_country: "US",
-            vehicle_types: data.carrier_profile?.vehicle_types?.length
-              ? data.carrier_profile.vehicle_types
-              : ["dry_van"],
-            max_weight_kg: String(data.carrier_profile?.max_weight_kg ?? 20000),
-            fuel_efficiency_kmpl: String(data.carrier_profile?.fuel_efficiency_kmpl ?? DEFAULT_OPERATING_PROFILE.fuel_efficiency_kmpl),
-            idle_fuel_lph: String(data.carrier_profile?.idle_fuel_lph ?? DEFAULT_OPERATING_PROFILE.idle_fuel_lph),
-            maintenance_cost_per_km_usd: String(data.carrier_profile?.maintenance_cost_per_km_usd ?? DEFAULT_OPERATING_PROFILE.maintenance_cost_per_km_usd),
-            driver_cost_per_hour_usd: String(data.carrier_profile?.driver_cost_per_hour_usd ?? DEFAULT_OPERATING_PROFILE.driver_cost_per_hour_usd),
-            toll_discount_pct: String(data.carrier_profile?.toll_discount_pct ?? DEFAULT_OPERATING_PROFILE.toll_discount_pct),
-            fuel_price_adjustment_pct: String(data.carrier_profile?.fuel_price_adjustment_pct ?? DEFAULT_OPERATING_PROFILE.fuel_price_adjustment_pct),
-            empty_mile_factor_pct: String(data.carrier_profile?.empty_mile_factor_pct ?? DEFAULT_OPERATING_PROFILE.empty_mile_factor_pct),
-          });
-          setStreetPlaceId(null);
-          setStreetSuggestions([]);
-          setStreetOpen(false);
-          setCityPlaceId(null);
-          setCitySuggestions([]);
-          setCityOpen(false);
-        } catch (error) {
-          setMessage(error instanceof Error ? error.message : "Failed to load carrier profile.");
-        }
-      })();
-    }, 0);
-
-    return () => clearTimeout(kickoff);
+    void (async () => {
+      try {
+        const data = await getUserProfile(sessionEmail, "carrier");
+        const parsedAddress = parseStreetCityStateZip(data.address);
+        setProfile(data);
+        setProfileForm({
+          full_name: data.full_name,
+          company_name: data.company_name,
+          phone: data.phone || "",
+          street: parsedAddress.street,
+          city: parsedAddress.city,
+          state: parsedAddress.state,
+          postal_code: parsedAddress.postalCode,
+          country: parsedAddress.country,
+          bio: data.bio || "",
+          tax_id: data.tax_id || "",
+          dot_number: data.dot_number || "",
+          available_trucks: String(data.carrier_profile?.available_trucks ?? 1),
+          service_regions: data.carrier_profile?.service_regions || [],
+          service_region_state: "",
+          service_region_country: "US",
+          vehicle_types: data.carrier_profile?.vehicle_types?.length
+            ? data.carrier_profile.vehicle_types
+            : ["dry_van"],
+          max_weight_kg: String(data.carrier_profile?.max_weight_kg ?? 20000),
+          fuel_efficiency_kmpl: String(data.carrier_profile?.fuel_efficiency_kmpl ?? DEFAULT_OPERATING_PROFILE.fuel_efficiency_kmpl),
+          idle_fuel_lph: String(data.carrier_profile?.idle_fuel_lph ?? DEFAULT_OPERATING_PROFILE.idle_fuel_lph),
+          maintenance_cost_per_km_usd: String(data.carrier_profile?.maintenance_cost_per_km_usd ?? DEFAULT_OPERATING_PROFILE.maintenance_cost_per_km_usd),
+          driver_cost_per_hour_usd: String(data.carrier_profile?.driver_cost_per_hour_usd ?? DEFAULT_OPERATING_PROFILE.driver_cost_per_hour_usd),
+          toll_discount_pct: String(data.carrier_profile?.toll_discount_pct ?? DEFAULT_OPERATING_PROFILE.toll_discount_pct),
+          fuel_price_adjustment_pct: String(data.carrier_profile?.fuel_price_adjustment_pct ?? DEFAULT_OPERATING_PROFILE.fuel_price_adjustment_pct),
+          empty_mile_factor_pct: String(data.carrier_profile?.empty_mile_factor_pct ?? DEFAULT_OPERATING_PROFILE.empty_mile_factor_pct),
+        });
+        setStreetPlaceId(null);
+        setStreetSuggestions([]);
+        setStreetOpen(false);
+        setCityPlaceId(null);
+        setCitySuggestions([]);
+        setCityOpen(false);
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : "Failed to load carrier profile.");
+      }
+    })();
   }, [ready, session]);
 
   useEffect(() => {
@@ -2078,7 +2067,15 @@ export default function CarrierPortalPage() {
   }
 
   if (!ready) {
-    return null;
+    return (
+      <main className="min-h-screen bg-slate-100 p-6 text-slate-900 md:p-10">
+        <div className="mx-auto w-full max-w-7xl rounded-3xl bg-white p-8 shadow-sm">
+          <p className="text-xs uppercase tracking-[0.2em] text-emerald-700">Carrier Portal</p>
+          <h1 className="mt-3 text-2xl font-semibold text-slate-900">Loading dispatch workspace...</h1>
+          <p className="mt-2 text-sm text-slate-600">Preparing your shipments, offers, and account data.</p>
+        </div>
+      </main>
+    );
   }
 
   return (

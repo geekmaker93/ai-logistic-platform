@@ -115,6 +115,21 @@ function getLoginRoleLabel(role: LoginRole): string {
   return "Driver";
 }
 
+function resolveDashboardPath(role: LoginRole): string {
+  if (role === "carrier") return "/carrier";
+  if (role === "driver") return "/driver";
+  return "/client";
+}
+
+function navigateToDashboard(role: LoginRole): void {
+  globalThis.window.location.assign(resolveDashboardPath(role));
+}
+
+function resolveProfilePath(role: LoginRole): string {
+  if (role === "driver") return "/driver";
+  return `${resolveDashboardPath(role)}?account=profile`;
+}
+
 function NavBrand(props: Readonly<{ isAboutView: boolean; onOpenLanding: () => void }>) {
   const { isAboutView, onOpenLanding } = props;
 
@@ -221,16 +236,19 @@ function NavTabs(props: Readonly<{
   );
 }
 
-function SignedInControls(props: Readonly<{ isAboutView: boolean; activeSessionName: string; onSignOut: () => void }>) {
-  const { isAboutView, activeSessionName, onSignOut } = props;
+function SignedInControls(props: Readonly<{ isAboutView: boolean; activeSessionName: string; onOpenProfile: () => void; onSignOut: () => void }>) {
+  const { isAboutView, activeSessionName, onOpenProfile, onSignOut } = props;
 
   return (
     <div className="flex items-center gap-2">
-      <span
+      <button
+        type="button"
+        onClick={onOpenProfile}
         className={`rounded-full px-3 py-1.5 text-xs ${isAboutView ? "border border-slate-200 bg-slate-100 text-slate-700" : "border border-cyan-300/25 bg-cyan-500/10 text-cyan-100"}`}
+        title="Open account profile"
       >
         {activeSessionName}
-      </span>
+      </button>
       <button
         type="button"
         onClick={onSignOut}
@@ -300,6 +318,7 @@ function TopNavigation(props: Readonly<{
   onToggleLoginMenu: () => void;
   onOpenRoleLogin: (role: LoginRole) => void;
   onCreateAccount: () => void;
+  onOpenProfile: () => void;
   onSignOut: () => void;
 }>) {
   const {
@@ -316,6 +335,7 @@ function TopNavigation(props: Readonly<{
     onToggleLoginMenu,
     onOpenRoleLogin,
     onCreateAccount,
+    onOpenProfile,
     onSignOut,
   } = props;
 
@@ -334,7 +354,7 @@ function TopNavigation(props: Readonly<{
           onOpenAbout={onOpenAbout}
         />
         {activeSessionName ? (
-          <SignedInControls isAboutView={isAboutView} activeSessionName={activeSessionName} onSignOut={onSignOut} />
+          <SignedInControls isAboutView={isAboutView} activeSessionName={activeSessionName} onOpenProfile={onOpenProfile} onSignOut={onSignOut} />
         ) : (
           <SignedOutControls
             isAboutView={isAboutView}
@@ -350,8 +370,8 @@ function TopNavigation(props: Readonly<{
   );
 }
 
-function LandingPanel(props: Readonly<{ activeSessionName: string | null; message: string }>) {
-  const { activeSessionName, message } = props;
+function LandingPanel(props: Readonly<{ message: string }>) {
+  const { message } = props;
 
   return (
     <>
@@ -360,11 +380,6 @@ function LandingPanel(props: Readonly<{ activeSessionName: string | null; messag
       <p className="mt-4 text-sm leading-6 text-slate-200 md:text-base">
         Digital freight coordination for shippers and carriers with route intelligence and real-time operations.
       </p>
-      {activeSessionName && (
-        <div className="mt-4 rounded-lg border border-cyan-300/25 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-200">
-          Signed in as {activeSessionName}
-        </div>
-      )}
       {message && (
         <p className="mt-4 rounded-xl border border-amber-300/50 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
           {message}
@@ -832,6 +847,7 @@ function PageShell(props: Readonly<{
   onToggleLoginMenu: () => void;
   onOpenRoleLogin: (role: LoginRole) => void;
   onCreateAccount: () => void;
+  onOpenProfile: () => void;
   onSignOut: () => void;
   onToggleShowLoginPassword: () => void;
   onLogin: () => void;
@@ -910,7 +926,7 @@ function PageShell(props: Readonly<{
   } else {
     content = (
       <section className="w-full max-w-xl rounded-3xl border border-cyan-300/25 bg-[#031227]/75 p-7 text-white shadow-[0_20px_80px_rgba(0,0,0,0.45)] backdrop-blur-sm md:p-9">
-        {view === "landing" && <LandingPanel activeSessionName={activeSessionName} message={message} />}
+        {view === "landing" && <LandingPanel message={message} />}
         {view === "login" && (
           <LoginPanel
             loginForm={loginForm}
@@ -961,6 +977,7 @@ function PageShell(props: Readonly<{
           onToggleLoginMenu={onToggleLoginMenu}
           onOpenRoleLogin={onOpenRoleLogin}
           onCreateAccount={onCreateAccount}
+          onOpenProfile={props.onOpenProfile}
           onSignOut={onSignOut}
         />
 
@@ -995,6 +1012,7 @@ export default function Home() {
     role: "client",
   });
   const [activeSessionName, setActiveSessionName] = useState<string | null>(null);
+  const [activeSessionRole, setActiveSessionRole] = useState<LoginRole | null>(null);
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState<null | "login" | "signup">(null);
   const loginMenuRef = useRef<HTMLDivElement | null>(null);
@@ -1016,7 +1034,15 @@ export default function Home() {
     clearAuthLiteSession();
     clearDriverPortalSession();
     setActiveSessionName(null);
+    setActiveSessionRole(null);
     trackEvent("auth.sign_out");
+  }
+
+  function openActiveProfile() {
+    if (!activeSessionRole) {
+      return;
+    }
+    globalThis.window.location.assign(resolveProfilePath(activeSessionRole));
   }
 
   function openLanding() {
@@ -1048,6 +1074,7 @@ export default function Home() {
       const session = getAuthLiteSession();
       if (session) {
         setActiveSessionName(session.displayName);
+        setActiveSessionRole(session.role);
       }
     }, 0);
 
@@ -1080,9 +1107,10 @@ export default function Home() {
         setDriverPortalSession(session);
         setAuthLiteSession("driver", session.driver_name, session.carrier_email);
         setActiveSessionName(session.driver_name);
+        setActiveSessionRole("driver");
         trackEvent("auth.sign_in", { role: "driver", displayName: session.driver_name });
         setMessage("");
-        setView("landing");
+        navigateToDashboard("driver");
         return;
       }
 
@@ -1100,9 +1128,10 @@ export default function Home() {
 
       setAuthLiteSession(account.role, account.display_name, account.email);
       setActiveSessionName(account.display_name);
+      setActiveSessionRole(account.role);
       trackEvent("auth.sign_in", { role: account.role, displayName: account.display_name });
       setMessage("");
-      setView("landing");
+      navigateToDashboard(account.role);
     } catch (error: unknown) {
       setMessage(getErrorMessage(error));
     } finally {
@@ -1150,9 +1179,10 @@ export default function Home() {
 
       setAuthLiteSession(account.role, account.display_name, account.email);
       setActiveSessionName(account.display_name);
+      setActiveSessionRole(account.role);
       trackEvent("auth.sign_up", { role: account.role, displayName: account.display_name });
       setMessage("");
-      setView("landing");
+      navigateToDashboard(account.role);
     } catch (error: unknown) {
       setMessage(getErrorMessage(error));
     } finally {
@@ -1195,6 +1225,7 @@ export default function Home() {
           setMessage("");
           setView("signup");
         }}
+        onOpenProfile={openActiveProfile}
         onSignOut={signOut}
         onToggleShowLoginPassword={() => setShowLoginPassword((prev) => !prev)}
         onLogin={login}
@@ -1213,4 +1244,8 @@ export default function Home() {
     </>
   );
 }
+
+
+
+
 
