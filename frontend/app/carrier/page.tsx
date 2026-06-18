@@ -138,6 +138,37 @@ function buildMetricChartPath(values: number[], width = 280, height = 100): stri
   }).join(" ");
 }
 
+function formatTrendDelta(deltaPct: number): string {
+  const arrow = deltaPct >= 0 ? "↑" : "↓";
+  return `${arrow} ${Math.abs(deltaPct).toFixed(1)}% from last month`;
+}
+
+function trendToneClass(deltaPct: number): string {
+  if (deltaPct >= 0) {
+    return "border border-emerald-200 bg-emerald-50 text-emerald-700";
+  }
+  return "border border-rose-200 bg-rose-50 text-rose-700";
+}
+
+function MetricSparkline(props: Readonly<{ values: number[]; stroke: string; fillId: string; label: string }>) {
+  const { values, stroke, fillId, label } = props;
+  const chartValues = values.length > 1 ? values : [0, ...values];
+  const path = buildMetricChartPath(chartValues, 160, 48);
+
+  return (
+    <svg viewBox="0 0 160 48" className="h-12 w-40" role="img" aria-label={label}>
+      <defs>
+        <linearGradient id={fillId} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={stroke} stopOpacity="0.35" />
+          <stop offset="100%" stopColor={stroke} stopOpacity="0.02" />
+        </linearGradient>
+      </defs>
+      <path d={`${path} L160,48 L0,48 Z`} fill={`url(#${fillId})`} />
+      <path d={path} fill="none" stroke={stroke} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function CarrierStatCard(props: Readonly<{
   label: string;
   value: string | number;
@@ -1918,79 +1949,104 @@ export default function CarrierPortalPage() {
     return Math.round((complete / checks.length) * 100);
   }, [profileForm]);
 
-  const weeklyMetricsData = useMemo(() => {
-    const now = new Date();
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const thisMonthShipments = deliveredShipments.filter((s) => new Date(s.created_at) >= monthStart);
-    
-    // Get weeks in current month (4 weeks)
-    const weeks = [
-      { start: monthStart, end: new Date(monthStart.getTime() + 7 * 24 * 60 * 60 * 1000) },
-      { start: new Date(monthStart.getTime() + 7 * 24 * 60 * 60 * 1000), end: new Date(monthStart.getTime() + 14 * 24 * 60 * 60 * 1000) },
-      { start: new Date(monthStart.getTime() + 14 * 24 * 60 * 60 * 1000), end: new Date(monthStart.getTime() + 21 * 24 * 60 * 60 * 1000) },
-      { start: new Date(monthStart.getTime() + 21 * 24 * 60 * 60 * 1000), end: new Date(monthStart.getTime() + 28 * 24 * 60 * 60 * 1000) },
-    ];
-    
-    const weeklyRevenue = weeks.map((week) => {
-      return thisMonthShipments
-        .filter((s) => {
-          const shipDate = new Date(s.created_at);
-          return shipDate >= week.start && shipDate < week.end;
-        })
-        .reduce((sum, s) => {
-          const quote = s.quote_breakdown;
-          if (quote?.service_fee_usd) {
-            return sum + Number.parseFloat(quote.service_fee_usd.toString());
-          }
-          return sum;
-        }, 0);
-    });
-    
-    const weeklyLoads = weeks.map((week) => {
-      return thisMonthShipments.filter((s) => {
-        const shipDate = new Date(s.created_at);
-        return shipDate >= week.start && shipDate < week.end;
-      }).length;
-    });
-    
-    return {
-      weeklyRevenue,
-      weeklyLoads,
-    };
-  }, [deliveredShipments]);
-
   const carrierAnalytics = useMemo(() => {
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const thisMonthShipments = deliveredShipments.filter((s) => new Date(s.created_at) >= monthStart);
-    
-    // Revenue this month
-    const revenueThisMonth = thisMonthShipments.reduce((sum, s) => {
-      const quote = s.quote_breakdown;
-      if (quote?.service_fee_usd) {
-        return sum + Number.parseFloat(quote.service_fee_usd.toString());
+    const nextMonthStart = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+
+    const inWindow = (isoDate: string, start: Date, end: Date) => {
+      const value = new Date(isoDate);
+      return value >= start && value < end;
+    };
+
+    const serviceFeeOf = (shipment: Shipment) => {
+      const raw = shipment.quote_breakdown?.service_fee_usd;
+      if (raw === undefined || raw === null) {
+        return 0;
       }
-      return sum;
-    }, 0);
-    
-    // Loads completed this month
-    const loadsCompletedThisMonth = thisMonthShipments.length;
-    
-    // Driver utilization (active shipments / total drivers)
-    const activeWithDrivers = activeShipments.filter((s) => s.assigned_driver_id).length;
-    const totalDrivers = Math.max(carrierDrivers.length, 1);
-    const driverUtilization = Math.round((activeWithDrivers / totalDrivers) * 100);
-    
-    // Active routes (number of shipments with assigned drivers currently in motion)
-    const activeRoutes = activeWithDrivers;
-    
+      const parsed = Number.parseFloat(raw.toString());
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+
+    const marginPctOf = (shipment: Shipment) => {
+      const total = shipment.quote_breakdown?.total_usd ?? 0;
+      if (total <= 0) {
+        return null;
+      }
+      return (serviceFeeOf(shipment) / total) * 100;
+    };
+
+    const onTimePctOf = (shipments: Shipment[]) => {
+      const withEta = shipments.filter((s) => s.estimated_arrival);
+      if (withEta.length === 0) {
+        return 0;
+      }
+      const onTime = withEta.filter((s) => new Date(s.updated_at) <= new Date(s.estimated_arrival as string)).length;
+      return (onTime / withEta.length) * 100;
+    };
+
+    const avgMarginOf = (shipments: Shipment[]) => {
+      const margins = shipments
+        .map(marginPctOf)
+        .filter((value): value is number => value !== null);
+      if (margins.length === 0) {
+        return 0;
+      }
+      return margins.reduce((sum, value) => sum + value, 0) / margins.length;
+    };
+
+    const pctDelta = (current: number, previous: number) => {
+      if (Math.abs(previous) < 0.0001) {
+        return current === 0 ? 0 : 100;
+      }
+      return ((current - previous) / Math.abs(previous)) * 100;
+    };
+
+    const thisMonthDelivered = deliveredShipments.filter((s) => inWindow(s.created_at, monthStart, nextMonthStart));
+    const lastMonthDelivered = deliveredShipments.filter((s) => inWindow(s.created_at, lastMonthStart, monthStart));
+    const lastMonthTransit = queue.filter((s) => (s.status === "active" || s.status === "in_transit") && inWindow(s.created_at, lastMonthStart, monthStart));
+
+    const revenueThisMonth = thisMonthDelivered.reduce((sum, s) => sum + serviceFeeOf(s), 0);
+    const revenueLastMonth = lastMonthDelivered.reduce((sum, s) => sum + serviceFeeOf(s), 0);
+    const loadsInTransit = activeShipments.length;
+    const loadsInTransitLastMonth = lastMonthTransit.length;
+    const averageMargin = avgMarginOf(thisMonthDelivered);
+    const averageMarginLastMonth = avgMarginOf(lastMonthDelivered);
+    const onTimeDelivery = onTimePctOf(thisMonthDelivered);
+    const onTimeDeliveryLastMonth = onTimePctOf(lastMonthDelivered);
+
+    const monthlyRanges = Array.from({ length: 6 }, (_, offset) => {
+      const monthOffset = 5 - offset;
+      const start = new Date(now.getFullYear(), now.getMonth() - monthOffset, 1);
+      const end = new Date(now.getFullYear(), now.getMonth() - monthOffset + 1, 1);
+      return { start, end };
+    });
+
+    const sparklineSeries = {
+      revenue: monthlyRanges.map(({ start, end }) => deliveredShipments
+        .filter((s) => inWindow(s.created_at, start, end))
+        .reduce((sum, s) => sum + serviceFeeOf(s), 0)),
+      transit: monthlyRanges.map(({ start, end }) => queue
+        .filter((s) => (s.status === "active" || s.status === "in_transit") && inWindow(s.created_at, start, end)).length),
+      margin: monthlyRanges.map(({ start, end }) => avgMarginOf(deliveredShipments.filter((s) => inWindow(s.created_at, start, end)))),
+      onTime: monthlyRanges.map(({ start, end }) => onTimePctOf(deliveredShipments.filter((s) => inWindow(s.created_at, start, end)))),
+    };
+
     return {
       revenueThisMonth,
-      loadsCompletedThisMonth,
-      driverUtilization,
-      activeRoutes,
+      loadsInTransit,
+      averageMargin,
+      onTimeDelivery,
+      trends: {
+        revenue: pctDelta(revenueThisMonth, revenueLastMonth),
+        loadsInTransit: pctDelta(loadsInTransit, loadsInTransitLastMonth),
+        averageMargin: pctDelta(averageMargin, averageMarginLastMonth),
+        onTimeDelivery: pctDelta(onTimeDelivery, onTimeDeliveryLastMonth),
+      },
+      sparklineSeries,
     };
-  }, [deliveredShipments, activeShipments, carrierDrivers]);
+  }, [deliveredShipments, queue, activeShipments.length]);
 
   function signOut() {
     clearAuthLiteSession("carrier");
@@ -2757,132 +2813,64 @@ export default function CarrierPortalPage() {
         {isSubscriptionActive && activeTab === "metrics" && (
           <section className="space-y-6">
             <div className="carrier-premium-card carrier-fade-up rounded-[30px] p-6 md:p-7">
-              <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">Performance metrics</p>
-              <h2 className="mt-2 text-2xl font-semibold tracking-[-0.03em] text-slate-950">This Month's Performance</h2>
+              <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">Premium metrics</p>
+              <h2 className="mt-2 text-2xl font-semibold tracking-[-0.03em] text-slate-950">Carrier revenue scoreboard</h2>
+              <p className="mt-3 text-sm leading-6 text-slate-600">See if you are growing month over month with clear trend signals tied to revenue, movement, margin, and delivery reliability.</p>
             </div>
 
-            <div className="grid gap-6 xl:grid-cols-2">
-              <div className="carrier-premium-card rounded-[28px] p-6">
-                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Revenue Trend</p>
-                <div className="mt-5 rounded-[20px] bg-slate-950 p-5 text-white shadow-[0_18px_45px_rgba(15,23,42,0.28)]">
-                  <div className="flex items-start justify-between">
+            <div className="carrier-premium-card rounded-[30px] p-4 md:p-5">
+              <div className="grid gap-3">
+                <article className="rounded-[24px] border border-slate-200/90 bg-white/85 px-5 py-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
-                      <p className="text-[11px] uppercase tracking-[0.22em] text-emerald-200/80">Total Revenue</p>
-                      <p className="mt-2 text-3xl font-semibold tracking-tight">{formatUsdCompact(carrierAnalytics.revenueThisMonth)}</p>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">Revenue this month</p>
+                      <p className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">{formatUsdCompact(carrierAnalytics.revenueThisMonth)}</p>
                     </div>
-                    <svg viewBox="0 0 280 100" className="h-16 w-32" role="img" aria-label="Revenue trend chart">
-                      <defs>
-                        <linearGradient id="revenueTrendFill" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="#34d399" />
-                          <stop offset="100%" stopColor="#34d399" />
-                        </linearGradient>
-                      </defs>
-                      <path d={buildMetricChartPath(weeklyMetricsData.weeklyRevenue, 280, 100)} fill="none" stroke="#34d399" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-                      <path d={`${buildMetricChartPath(weeklyMetricsData.weeklyRevenue, 280, 100)} L280,100 L0,100 Z`} fill="url(#revenueTrendFill)" opacity="0.15" />
-                    </svg>
+                    <div className="flex flex-col items-end gap-2">
+                      <MetricSparkline values={carrierAnalytics.sparklineSeries.revenue} stroke="#10b981" fillId="revenueSparkline" label="Revenue trend over six months" />
+                      <span className={`rounded-full px-3 py-1 text-xs font-semibold ${trendToneClass(carrierAnalytics.trends.revenue)}`}>{formatTrendDelta(carrierAnalytics.trends.revenue)}</span>
+                    </div>
                   </div>
-                  <p className="mt-3 text-xs leading-5 text-slate-300">Weekly revenue trend - earnings from completed shipments.</p>
-                </div>
-              </div>
+                </article>
 
-              <div className="carrier-premium-card rounded-[28px] p-6">
-                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Loads Completed</p>
-                <div className="mt-5 rounded-[20px] bg-slate-950 p-5 text-white shadow-[0_18px_45px_rgba(15,23,42,0.28)]">
-                  <div className="flex items-start justify-between">
+                <article className="rounded-[24px] border border-slate-200/90 bg-white/85 px-5 py-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
-                      <p className="text-[11px] uppercase tracking-[0.22em] text-emerald-200/80">Deliveries</p>
-                      <p className="mt-2 text-3xl font-semibold tracking-tight">{carrierAnalytics.loadsCompletedThisMonth}</p>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">Loads in transit</p>
+                      <p className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">{carrierAnalytics.loadsInTransit}</p>
                     </div>
-                    <svg viewBox="0 0 280 100" className="h-16 w-32" role="img" aria-label="Loads trend chart">
-                      <defs>
-                        <linearGradient id="loadsTrendFill" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="#f59e0b" />
-                          <stop offset="100%" stopColor="#f59e0b" />
-                        </linearGradient>
-                      </defs>
-                      <path d={buildMetricChartPath(weeklyMetricsData.weeklyLoads, 280, 100)} fill="none" stroke="#f59e0b" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-                      <path d={`${buildMetricChartPath(weeklyMetricsData.weeklyLoads, 280, 100)} L280,100 L0,100 Z`} fill="url(#loadsTrendFill)" opacity="0.15" />
-                    </svg>
+                    <div className="flex flex-col items-end gap-2">
+                      <MetricSparkline values={carrierAnalytics.sparklineSeries.transit} stroke="#0ea5e9" fillId="transitSparkline" label="Transit load trend over six months" />
+                      <span className={`rounded-full px-3 py-1 text-xs font-semibold ${trendToneClass(carrierAnalytics.trends.loadsInTransit)}`}>{formatTrendDelta(carrierAnalytics.trends.loadsInTransit)}</span>
+                    </div>
                   </div>
-                  <p className="mt-3 text-xs leading-5 text-slate-300">Weekly loads trend - shipments delivered per week.</p>
-                </div>
-              </div>
+                </article>
 
-              <div className="carrier-premium-card rounded-[28px] p-6">
-                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Driver Utilization</p>
-                <div className="mt-5 rounded-[20px] bg-slate-950 p-5 text-white shadow-[0_18px_45px_rgba(15,23,42,0.28)]">
-                  <div className="flex items-start justify-between">
+                <article className="rounded-[24px] border border-slate-200/90 bg-white/85 px-5 py-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
-                      <p className="text-[11px] uppercase tracking-[0.22em] text-sky-200/80">Fleet Efficiency</p>
-                      <p className="mt-2 text-3xl font-semibold tracking-tight">{carrierAnalytics.driverUtilization}%</p>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">Average margin</p>
+                      <p className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">{carrierAnalytics.averageMargin.toFixed(1)}%</p>
                     </div>
-                    <svg viewBox="0 0 100 60" className="h-12 w-16" role="img" aria-label="Utilization gauge">
-                      <circle cx="50" cy="50" r="35" fill="none" stroke="rgba(71, 235, 198, 0.2)" strokeWidth="3" />
-                      <path d={`M50,50 L${50 + 35 * Math.cos((carrierAnalytics.driverUtilization / 100 * 180 - 90) * Math.PI / 180)},${50 + 35 * Math.sin((carrierAnalytics.driverUtilization / 100 * 180 - 90) * Math.PI / 180)}`} stroke="#34d399" strokeWidth="3" strokeLinecap="round" />
-                    </svg>
+                    <div className="flex flex-col items-end gap-2">
+                      <MetricSparkline values={carrierAnalytics.sparklineSeries.margin} stroke="#f59e0b" fillId="marginSparkline" label="Margin trend over six months" />
+                      <span className={`rounded-full px-3 py-1 text-xs font-semibold ${trendToneClass(carrierAnalytics.trends.averageMargin)}`}>{formatTrendDelta(carrierAnalytics.trends.averageMargin)}</span>
+                    </div>
                   </div>
-                  <p className="mt-3 text-xs leading-5 text-slate-300">Percentage of active drivers with assigned shipments.</p>
-                </div>
-              </div>
+                </article>
 
-              <div className="carrier-premium-card rounded-[28px] p-6">
-                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Active Routes</p>
-                <div className="mt-5 rounded-[20px] bg-slate-950 p-5 text-white shadow-[0_18px_45px_rgba(15,23,42,0.28)]">
-                  <div className="flex items-start justify-between">
+                <article className="rounded-[24px] border border-slate-200/90 bg-white/85 px-5 py-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
-                      <p className="text-[11px] uppercase tracking-[0.22em] text-amber-200/80">In Motion</p>
-                      <p className="mt-2 text-3xl font-semibold tracking-tight">{carrierAnalytics.activeRoutes}</p>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">On-time delivery</p>
+                      <p className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">{carrierAnalytics.onTimeDelivery.toFixed(1)}%</p>
                     </div>
-                    <svg viewBox="0 0 100 60" className="h-12 w-16" role="img" aria-label="Active routes">
-                      <defs>
-                        <linearGradient id="routesTrendFill" x1="0" y1="0" x2="1" y2="1">
-                          <stop offset="0%" stopColor="#fbbf24" />
-                          <stop offset="100%" stopColor="#f87171" />
-                        </linearGradient>
-                      </defs>
-                      <rect x="5" y={30 - (carrierAnalytics.activeRoutes > 0 ? 10 : 2)} width="12" height="28" fill="url(#routesTrendFill)" rx="2" />
-                      <rect x="22" y={30 - (carrierAnalytics.activeRoutes > 1 ? 15 : 2)} width="12" height="28" fill="url(#routesTrendFill)" rx="2" opacity="0.7" />
-                      <rect x="39" y={30 - (carrierAnalytics.activeRoutes > 2 ? 20 : 2)} width="12" height="28" fill="url(#routesTrendFill)" rx="2" opacity="0.5" />
-                      <rect x="56" y={30 - (carrierAnalytics.activeRoutes > 3 ? 18 : 2)} width="12" height="28" fill="url(#routesTrendFill)" rx="2" opacity="0.4" />
-                      <rect x="73" y={30 - (carrierAnalytics.activeRoutes > 4 ? 12 : 2)} width="12" height="28" fill="url(#routesTrendFill)" rx="2" opacity="0.3" />
-                    </svg>
+                    <div className="flex flex-col items-end gap-2">
+                      <MetricSparkline values={carrierAnalytics.sparklineSeries.onTime} stroke="#8b5cf6" fillId="onTimeSparkline" label="On-time delivery trend over six months" />
+                      <span className={`rounded-full px-3 py-1 text-xs font-semibold ${trendToneClass(carrierAnalytics.trends.onTimeDelivery)}`}>{formatTrendDelta(carrierAnalytics.trends.onTimeDelivery)}</span>
+                    </div>
                   </div>
-                  <p className="mt-3 text-xs leading-5 text-slate-300">Number of shipments currently assigned to drivers.</p>
-                </div>
-              </div>
-            </div>
-
-            <div className="carrier-premium-card rounded-[28px] p-6">
-              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Month Summary</p>
-              <div className="mt-6 space-y-3">
-                <div className="flex items-center justify-between rounded-[16px] border border-slate-200 bg-white/50 px-5 py-4">
-                  <div>
-                    <p className="text-sm font-semibold text-slate-700">Total Revenue</p>
-                    <p className="mt-0.5 text-xs text-slate-600">Earnings from all completed shipments</p>
-                  </div>
-                  <p className="text-2xl font-bold text-emerald-600">{formatUsdCompact(carrierAnalytics.revenueThisMonth)}</p>
-                </div>
-                <div className="flex items-center justify-between rounded-[16px] border border-slate-200 bg-white/50 px-5 py-4">
-                  <div>
-                    <p className="text-sm font-semibold text-slate-700">Completed Loads</p>
-                    <p className="mt-0.5 text-xs text-slate-600">Shipments delivered this month</p>
-                  </div>
-                  <p className="text-2xl font-bold text-emerald-600">{carrierAnalytics.loadsCompletedThisMonth}</p>
-                </div>
-                <div className="flex items-center justify-between rounded-[16px] border border-slate-200 bg-white/50 px-5 py-4">
-                  <div>
-                    <p className="text-sm font-semibold text-slate-700">Fleet Efficiency</p>
-                    <p className="mt-0.5 text-xs text-slate-600">Percentage of drivers actively engaged</p>
-                  </div>
-                  <p className="text-2xl font-bold text-sky-600">{carrierAnalytics.driverUtilization}%</p>
-                </div>
-                <div className="flex items-center justify-between rounded-[16px] border border-slate-200 bg-white/50 px-5 py-4">
-                  <div>
-                    <p className="text-sm font-semibold text-slate-700">Active Routes</p>
-                    <p className="mt-0.5 text-xs text-slate-600">Shipments currently in transit</p>
-                  </div>
-                  <p className="text-2xl font-bold text-amber-600">{carrierAnalytics.activeRoutes}</p>
-                </div>
+                </article>
               </div>
             </div>
           </section>
