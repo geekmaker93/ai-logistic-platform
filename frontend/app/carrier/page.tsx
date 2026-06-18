@@ -18,6 +18,9 @@ import {
   createPaymentMethodSetupSession,
   createPayoutOnboardingSession,
   createSubscriptionCheckoutSession,
+  cancelSubscription,
+  resumeSubscription,
+  confirmCarrierShipmentPod,
   DriverDocumentRecord,
   CarrierDriverSummary,
   generateDriverLoginToken,
@@ -137,35 +140,11 @@ function toLbFromKg(weightKg: number): number {
   return Number((weightKg * LB_PER_KG).toFixed(0));
 }
 
-function paymentStateLabel(paymentStatus: string): string {
-  if (paymentStatus === "paid") {
-    return "Settled";
-  }
-  if (paymentStatus === "pending_client_confirmation") {
-    return "Pending client confirmation";
-  }
-  return "Not paid";
-}
-
 function formatRemainingDistance(distanceKm: number | null): string {
   if (distanceKm === null || distanceKm === undefined) {
     return "Pending";
   }
   return `${distanceKm.toFixed(1)} km`;
-}
-
-function transactionKindForShipment(shipment: Shipment): "purchase" | "void" {
-  return shipment.payment_status === "paid" ? "purchase" : "void";
-}
-
-function voidReasonForShipment(shipment: Shipment): string {
-  if (shipment.status === "rejected") {
-    return "Offer rejected or expired";
-  }
-  if (shipment.payment_status === "pending_client_confirmation") {
-    return "Waiting for shipper payment";
-  }
-  return "Unsettled payment";
 }
 
 function weatherRiskTone(risk: number): string {
@@ -766,8 +745,7 @@ export default function CarrierPortalPage() {
   const [selectedInvoice, setSelectedInvoice] = useState<{
     invoiceNum: string;
     transactionRef: string;
-    kind: "purchase" | "void";
-    detail: string;
+    paymentDate: string;
     shipment: Shipment;
   } | null>(null);
   const [profile, setProfile] = useState<AuthProfile | null>(null);
@@ -775,9 +753,11 @@ export default function CarrierPortalPage() {
   const [activeTab, setActiveTab] = useState<"dashboard" | "tracking" | "queue" | "optimization" | "payments" | "transactions" | "documents" | "drivers" | "profile" | "subscription">("dashboard");
   const [subscriptionPlans, setSubscriptionPlans] = useState<BillingPlan[]>([]);
   const [subscriptionStatus, setSubscriptionStatus] = useState<BillingStatus | null>(null);
+  const [subscriptionNotice, setSubscriptionNotice] = useState<string | null>(null);
   const [paymentMethodStatus, setPaymentMethodStatus] = useState<BillingPaymentMethodStatus | null>(null);
   const [payoutAccountStatus, setPayoutAccountStatus] = useState<BillingPayoutAccountStatus | null>(null);
   const [subscriptionLoading, setSubscriptionLoading] = useState(false);
+  const [subscriptionActionLoading, setSubscriptionActionLoading] = useState<"pause" | "cancel" | null>(null);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [walletSetupLoading, setWalletSetupLoading] = useState<PaymentInstrumentType | null>(null);
   const [walletRemoveLoading, setWalletRemoveLoading] = useState(false);
@@ -801,6 +781,7 @@ export default function CarrierPortalPage() {
     driver_mobile: "",
   });
   const [driverAssignmentByShipment, setDriverAssignmentByShipment] = useState<Record<string, string>>({});
+  const [confirmPodLoadingId, setConfirmPodLoadingId] = useState<string | null>(null);
   const [offerAmountByShipment, setOfferAmountByShipment] = useState<Record<string, string>>({});
   const [quoteDetailsOpenByShipment, setQuoteDetailsOpenByShipment] = useState<Record<string, boolean>>({});
   const [quoteDetailsByShipment, setQuoteDetailsByShipment] = useState<Record<string, CarrierQuoteDetailDraft>>({});
@@ -929,6 +910,7 @@ export default function CarrierPortalPage() {
     }
 
     setSubscriptionLoading(true);
+    setSubscriptionNotice(null);
     try {
       const [plans, status] = await Promise.all([
         listSubscriptionPlans(),
@@ -950,7 +932,12 @@ export default function CarrierPortalPage() {
           // Ignore wallet/payout fetch failures here to avoid blocking subscription access.
         });
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Failed to load subscription status.");
+      const errorMessage = error instanceof Error ? error.message : "Failed to load subscription status.";
+      if (errorMessage === "Account not found.") {
+        setSubscriptionNotice("This email is not linked to a carrier account yet. Sign out and sign back in, or have an admin create the carrier record.");
+      } else {
+        setMessage(errorMessage);
+      }
     } finally {
       setSubscriptionLoading(false);
     }
@@ -978,6 +965,54 @@ export default function CarrierPortalPage() {
       setCheckoutLoading(false);
     }
   }, [checkoutLoading, session]);
+
+  const cancelCarrierSubscription = useCallback(async () => {
+    if (!session?.email || subscriptionActionLoading) {
+      return;
+    }
+
+    const periodEnd = subscriptionStatus?.subscription_current_period_end
+      ? new Date(subscriptionStatus.subscription_current_period_end).toLocaleDateString()
+      : "the end of your billing period";
+
+    const shouldCancel = globalThis.window.confirm(
+      `Cancel subscription? You will keep full access until ${periodEnd}, then it will not renew.`
+    );
+    if (!shouldCancel) {
+      return;
+    }
+
+    setSubscriptionActionLoading("cancel");
+    try {
+      const status = await cancelSubscription(session.email, "carrier");
+      setSubscriptionStatus(status);
+      const accessUntil = status.subscription_current_period_end
+        ? new Date(status.subscription_current_period_end).toLocaleDateString()
+        : "the end of your billing period";
+      setMessage(`Subscription canceled. You have full access until ${accessUntil}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to cancel subscription.");
+    } finally {
+      setSubscriptionActionLoading(null);
+    }
+  }, [session, subscriptionActionLoading, subscriptionStatus]);
+
+  const resumeCarrierSubscription = useCallback(async () => {
+    if (!session?.email || subscriptionActionLoading) {
+      return;
+    }
+
+    setSubscriptionActionLoading("pause");
+    try {
+      const status = await resumeSubscription(session.email, "carrier");
+      setSubscriptionStatus(status);
+      setMessage("Subscription resumed. It will auto-renew as normal.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to resume subscription.");
+    } finally {
+      setSubscriptionActionLoading(null);
+    }
+  }, [session, subscriptionActionLoading]);
 
   const startWalletSetup = useCallback(async (instrumentType: PaymentInstrumentType) => {
     if (!session?.email || walletSetupLoading) {
@@ -1579,16 +1614,31 @@ export default function CarrierPortalPage() {
   const documentInvoices = useMemo(
     () =>
       acceptedByMe
-        .filter((s) => s.quote_breakdown)
-        .map((shipment, index) => {
-          const kind = transactionKindForShipment(shipment);
-          const referencePrefix = kind === "purchase" ? "PUR" : "VOID";
+        .filter(
+          (shipment) =>
+            shipment.payment_status === "paid"
+            && shipment.quote_breakdown !== null
+            && shipment.invoice_number !== null
+            && shipment.payment_intent_id !== null
+        )
+        .sort((a, b) => {
+          const aTime = new Date(a.payment_completed_at || a.invoice_generated_at || a.updated_at).getTime();
+          const bTime = new Date(b.payment_completed_at || b.invoice_generated_at || b.updated_at).getTime();
+          return bTime - aTime;
+        })
+        .map((shipment) => {
+          const quote = shipment.quote_breakdown!;
+          const amountUsd = shipment.shipper_approved_amount ?? shipment.carrier_offer_amount ?? quote.total_usd;
+          const freightChargeUsd = quote.base_freight_usd + quote.urgency_surcharge_usd + quote.distance_surcharge_usd;
           return {
             shipment,
-            invoiceNum: `INV-${new Date(shipment.created_at).getFullYear()}-${String(index + 1).padStart(4, "0")}`,
-            transactionRef: `${referencePrefix}-${shipment.id.slice(0, 8).toUpperCase()}`,
-            kind,
-            detail: kind === "purchase" ? "Payment received from shipper" : voidReasonForShipment(shipment),
+            invoiceNum: shipment.invoice_number!,
+            transactionRef: shipment.payment_intent_id!,
+            paymentDate: shipment.payment_completed_at || shipment.invoice_generated_at || shipment.updated_at,
+            amountUsd,
+            freightChargeUsd,
+            platformFeeUsd: quote.service_fee_usd,
+            detail: "Payment received from shipper via Stripe",
           };
         }),
     [acceptedByMe]
@@ -1598,7 +1648,7 @@ export default function CarrierPortalPage() {
     () =>
       documentInvoices.map((item) => ({
         ...item,
-        amountUsd: item.shipment.quote_breakdown?.total_usd ?? 0,
+        kind: "purchase" as const,
       })),
     [documentInvoices]
   );
@@ -1606,45 +1656,42 @@ export default function CarrierPortalPage() {
   function buildInvoiceDocument(params: {
     invoiceNum: string;
     transactionRef: string;
-    kind: "purchase" | "void";
-    detail: string;
+    paymentDate: string;
     shipment: Shipment;
   }): string {
-    const { invoiceNum, transactionRef, kind, detail, shipment } = params;
+    const { invoiceNum, transactionRef, paymentDate, shipment } = params;
     const quote = shipment.quote_breakdown;
     if (!quote) {
       return "No invoice data available.";
     }
 
+    const freightChargeUsd = quote.base_freight_usd + quote.urgency_surcharge_usd + quote.distance_surcharge_usd;
+    const platformFeeUsd = quote.service_fee_usd;
+    const totalPaidUsd = shipment.shipper_approved_amount ?? shipment.carrier_offer_amount ?? quote.total_usd;
+
     return [
-      `Invoice ID: ${invoiceNum}`,
-      `Transaction Ref: ${transactionRef}`,
-      `Transaction Type: ${kind === "purchase" ? "Purchase" : "Void"}`,
-      `Payment State: ${paymentStateLabel(shipment.payment_status)}`,
-      `Transaction Detail: ${detail}`,
-      `Issued Date: ${new Date(shipment.created_at).toLocaleDateString()}`,
+      `Invoice #: ${invoiceNum}`,
+      `Load #: ${shipment.load_number}`,
+      "Status: PAID",
       "",
-      `Bill To: ${shipment.client_name}`,
+      `Shipper: ${shipment.client_name}`,
       `Carrier: ${shipment.carrier_name ?? session?.displayName ?? "Unknown carrier"}`,
-      `Route: ${shipment.origin} to ${shipment.destination}`,
-      `Cargo: ${shipment.cargo_type}`,
-      `Weight: ${toLbFromKg(shipment.weight_kg).toLocaleString()} lb (${shipment.weight_kg.toLocaleString()} kg)`,
+      `Route: ${shipment.origin} -> ${shipment.destination}`,
       "",
-      `Base Freight: $${quote.base_freight_usd.toFixed(2)}`,
-      `Urgency Surcharge: $${quote.urgency_surcharge_usd.toFixed(2)}`,
-      `Distance Surcharge: $${quote.distance_surcharge_usd.toFixed(2)}`,
-      `Service Fee: $${quote.service_fee_usd.toFixed(2)}`,
-      `Total: $${quote.total_usd.toFixed(2)}`,
-      `ETA: ${quote.estimated_delivery_time}`,
-      ...(quote.notes ? [`Notes: ${quote.notes}`] : []),
+      "Description                 Amount",
+      `Freight Charge              $${freightChargeUsd.toFixed(2)}`,
+      `Platform Fee                $${platformFeeUsd.toFixed(2)}`,
+      `Total Paid                  $${totalPaidUsd.toFixed(2)}`,
+      "",
+      `Payment Date: ${new Date(paymentDate).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}`,
+      `Transaction ID: ${transactionRef}`,
     ].join("\n");
   }
 
   function onDownloadInvoice(params: {
     invoiceNum: string;
     transactionRef: string;
-    kind: "purchase" | "void";
-    detail: string;
+    paymentDate: string;
     shipment: Shipment;
   }) {
     const safeInvoiceId = params.invoiceNum.replace(/[^a-zA-Z0-9-_]/g, "_");
@@ -1655,8 +1702,7 @@ export default function CarrierPortalPage() {
   function onViewInvoice(params: {
     invoiceNum: string;
     transactionRef: string;
-    kind: "purchase" | "void";
-    detail: string;
+    paymentDate: string;
     shipment: Shipment;
   }) {
     setSelectedInvoice(params);
@@ -1977,6 +2023,25 @@ export default function CarrierPortalPage() {
     }
   }
 
+  async function onConfirmPod(shipmentId: string) {
+    if (!session || confirmPodLoadingId) {
+      return;
+    }
+
+    setConfirmPodLoadingId(shipmentId);
+    setMessage("");
+    try {
+      await confirmCarrierShipmentPod(shipmentId, { role: "carrier", displayName: session.displayName });
+      trackEvent("shipment.pod_confirmed", { role: "carrier", shipmentId });
+      setMessage("POD confirmed. Shipper review window started.");
+      await loadShipments();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to confirm POD.");
+    } finally {
+      setConfirmPodLoadingId(null);
+    }
+  }
+
   async function saveProfile() {
     if (!session?.email) {
       setMessage("Session email missing. Please sign in again.");
@@ -2172,7 +2237,7 @@ export default function CarrierPortalPage() {
           </p>
         )}
 
-        {!isSubscriptionActive && (
+        {!isSubscriptionActive && !subscriptionNotice && (
           <section className="rounded-2xl border border-amber-200 bg-amber-50 p-6 shadow-sm">
             <h2 className="text-xl font-semibold text-amber-900">Subscription Required</h2>
             <p className="mt-2 text-sm text-amber-800">
@@ -2209,15 +2274,51 @@ export default function CarrierPortalPage() {
           </section>
         )}
 
+        {!isSubscriptionActive && subscriptionNotice && (
+          <section className="rounded-2xl border border-rose-200 bg-rose-50 p-6 shadow-sm">
+            <h2 className="text-xl font-semibold text-rose-900">Carrier Account Not Found</h2>
+            <p className="mt-2 text-sm text-rose-800">{subscriptionNotice}</p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void loadSubscriptionState(true)}
+                disabled={subscriptionLoading}
+                className="rounded-lg border border-rose-300 bg-white px-4 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-60"
+              >
+                {subscriptionLoading ? "Checking..." : "Refresh Status"}
+              </button>
+              <button
+                type="button"
+                onClick={signOut}
+                className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+              >
+                Sign Out
+              </button>
+            </div>
+          </section>
+        )}
+
         {activeTab === "subscription" && (
           <section className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
             <h2 className="text-xl font-semibold">Subscription</h2>
             <p className="mt-1 text-sm text-slate-600">Manage your carrier plan access.</p>
-            <div className="mt-4 rounded-lg border border-slate-200 p-4 text-sm">
+            <div className="mt-4 rounded-lg border border-slate-200 p-4 text-sm space-y-1">
               <p><span className="font-semibold">Plan:</span> {carrierPlan?.name || "Carrier"}</p>
               <p><span className="font-semibold">Price:</span> ${carrierPlan?.price_usd.toFixed(2) || "49.99"}/month</p>
               <p><span className="font-semibold">Status:</span> {subscriptionStatus?.subscription_status || "inactive"}</p>
-              <p><span className="font-semibold">Access:</span> {isSubscriptionActive ? "Active" : "Locked until subscribed"}</p>
+              <p>
+                <span className="font-semibold">
+                  {subscriptionStatus?.subscription_cancel_at_period_end ? "Access until:" : "Renews:"}
+                </span>{" "}
+                {subscriptionStatus?.subscription_current_period_end
+                  ? new Date(subscriptionStatus.subscription_current_period_end).toLocaleDateString()
+                  : "n/a"}
+              </p>
+              {subscriptionStatus?.subscription_cancel_at_period_end && (
+                <p className="text-amber-700 font-medium">
+                  Cancellation scheduled — full access remains until the date above.
+                </p>
+              )}
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
               <button
@@ -2228,6 +2329,26 @@ export default function CarrierPortalPage() {
               >
                 {subscriptionLoading ? "Checking..." : "Refresh Status"}
               </button>
+              {isSubscriptionActive && !subscriptionStatus?.subscription_cancel_at_period_end && (
+                <button
+                  type="button"
+                  onClick={() => void cancelCarrierSubscription()}
+                  disabled={subscriptionActionLoading !== null}
+                  className="rounded-lg border border-rose-300 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-60"
+                >
+                  {subscriptionActionLoading === "cancel" ? "Canceling..." : "Cancel Subscription"}
+                </button>
+              )}
+              {isSubscriptionActive && subscriptionStatus?.subscription_cancel_at_period_end && (
+                <button
+                  type="button"
+                  onClick={() => void resumeCarrierSubscription()}
+                  disabled={subscriptionActionLoading !== null}
+                  className="rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-100 disabled:opacity-60"
+                >
+                  {subscriptionActionLoading === "pause" ? "Resuming..." : "Resume Subscription"}
+                </button>
+              )}
             </div>
           </section>
         )}
@@ -2592,6 +2713,15 @@ export default function CarrierPortalPage() {
                         >
                           Mark Delivered
                         </button>
+                        {shipment.payment_status === "paid" && shipment.status === "delivered" && shipment.pod_status === "uploaded" && shipment.payout_status !== "released" && (
+                          <button
+                            onClick={() => void onConfirmPod(shipment.id)}
+                            disabled={confirmPodLoadingId === shipment.id}
+                            className="rounded-md bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+                          >
+                            {confirmPodLoadingId === shipment.id ? "Confirming POD..." : "Confirm POD"}
+                          </button>
+                        )}
                       </>
                     )}
                   </div>
@@ -2609,6 +2739,19 @@ export default function CarrierPortalPage() {
                     Carrier: {shipment.carrier_name || "Offer stage"} • Payment: {shipment.payment_status}
                     {shipment.estimated_arrival ? ` • ETA ${new Date(shipment.estimated_arrival).toLocaleString()}` : ""}
                   </div>
+                  {shipment.payout_status === "pending_connect_account" && (
+                    <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                      <p className="font-semibold">Add a Stripe payout account (bank or debit card) to receive released funds.</p>
+                      <button
+                        type="button"
+                        onClick={() => void startPayoutOnboarding()}
+                        disabled={connectSetupLoading}
+                        className="rounded-md border border-amber-300 bg-white px-2.5 py-1 font-semibold hover:bg-amber-100 disabled:opacity-60"
+                      >
+                        {connectSetupLoading ? "Opening Stripe..." : "Add Bank/Debit for Payout"}
+                      </button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -3174,6 +3317,24 @@ export default function CarrierPortalPage() {
                       <p className="mt-2 text-xs text-slate-500">
                         POD: <span className="font-semibold text-slate-700">{shipment.pod_status || "pending"}</span> • Payout: <span className="font-semibold text-slate-700">{shipment.payout_status || "pending"}</span>
                       </p>
+                      {shipment.payout_status === "pending_connect_account" && (
+                        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                          <p className="font-semibold">Payout account required to receive released funds.</p>
+                          <button
+                            type="button"
+                            onClick={() => void startPayoutOnboarding()}
+                            disabled={connectSetupLoading}
+                            className="rounded-md border border-amber-300 bg-white px-2.5 py-1 font-semibold hover:bg-amber-100 disabled:opacity-60"
+                          >
+                            {connectSetupLoading ? "Opening Stripe..." : "Add Bank/Debit for Payout"}
+                          </button>
+                        </div>
+                      )}
+                      {shipment.pod_status === "carrier_confirmed" && shipment.payout_release_eligible_at && (
+                        <p className="mt-1 text-xs text-indigo-700">
+                          Review window active until {new Date(shipment.payout_release_eligible_at).toLocaleString()}.
+                        </p>
+                      )}
                       {q.notes && <p className="mt-2 text-xs text-slate-400">{q.notes}</p>}
                     </div>
                   );
@@ -3303,12 +3464,11 @@ export default function CarrierPortalPage() {
               <div className="mt-5 space-y-3">
                 {documentInvoices.length === 0 && (
                   <p className="rounded-lg border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">
-                    No invoices yet. Accepted shipments with quotes will appear here.
+                    No paid invoices yet. Completed shipper payments will appear here automatically.
                   </p>
                 )}
-                {documentInvoices.map(({ shipment, invoiceNum, transactionRef, kind, detail }) => {
+                {documentInvoices.map(({ shipment, invoiceNum, transactionRef, paymentDate, amountUsd, freightChargeUsd, platformFeeUsd }) => {
                     const q = shipment.quote_breakdown!;
-                    const isPaid = shipment.payment_status === "paid";
                     return (
                       <div key={shipment.id} className="rounded-xl border border-slate-200 bg-white p-5">
                         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-4">
@@ -3316,16 +3476,10 @@ export default function CarrierPortalPage() {
                             <p className="text-xs font-semibold uppercase tracking-widest text-slate-400">Invoice</p>
                             <p className="mt-1 text-lg font-bold text-slate-900">{invoiceNum}</p>
                             <p className="mt-0.5 text-xs text-slate-500">
-                              Issued {new Date(shipment.created_at).toLocaleDateString()}
+                              Payment Date {new Date(paymentDate).toLocaleDateString()}
                             </p>
                           </div>
-                          <span
-                            className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                              isPaid ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"
-                            }`}
-                          >
-                            {isPaid ? "PAID" : "UNPAID"}
-                          </span>
+                          <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">PAID</span>
                         </div>
 
                         <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
@@ -3338,23 +3492,15 @@ export default function CarrierPortalPage() {
                             <p className="mt-1 font-medium text-slate-800">{shipment.carrier_name ?? session?.displayName}</p>
                           </div>
                           <div>
+                            <p className="text-xs font-semibold uppercase text-slate-400">Load</p>
+                            <p className="mt-1 text-slate-700">{shipment.load_number}</p>
+                          </div>
+                          <div>
                             <p className="text-xs font-semibold uppercase text-slate-400">Route</p>
                             <p className="mt-1 text-slate-700">{shipment.origin} to {shipment.destination}</p>
                           </div>
                           <div>
-                            <p className="text-xs font-semibold uppercase text-slate-400">Cargo</p>
-                            <p className="mt-1 text-slate-700">
-                              {shipment.cargo_type} • {toLbFromKg(shipment.weight_kg).toLocaleString()} lb
-                            </p>
-                          </div>
-                          <div>
-                            <p className="text-xs font-semibold uppercase text-slate-400">Transaction Type</p>
-                            <p className={`mt-1 font-semibold ${kind === "purchase" ? "text-emerald-700" : "text-rose-700"}`}>
-                              {kind === "purchase" ? "Purchase" : "Void"}
-                            </p>
-                          </div>
-                          <div>
-                            <p className="text-xs font-semibold uppercase text-slate-400">Transaction Ref</p>
+                            <p className="text-xs font-semibold uppercase text-slate-400">Transaction ID</p>
                             <p className="mt-1 text-slate-700">{transactionRef}</p>
                           </div>
                         </div>
@@ -3362,7 +3508,7 @@ export default function CarrierPortalPage() {
                         <div className="mt-3 flex justify-end">
                           <button
                             type="button"
-                            onClick={() => onViewInvoice({ invoiceNum, transactionRef, kind, detail, shipment })}
+                            onClick={() => onViewInvoice({ invoiceNum: invoiceNum ?? "", transactionRef: transactionRef ?? "", paymentDate, shipment })}
                             className="rounded-md border border-emerald-300 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50"
                           >
                             View Invoice
@@ -3372,35 +3518,18 @@ export default function CarrierPortalPage() {
                         <div className="mt-4 rounded-lg bg-slate-50 p-3">
                           <div className="space-y-1 text-sm">
                             <div className="flex justify-between text-slate-600">
-                              <span>Base freight</span>
-                              <span>${q.base_freight_usd.toFixed(2)}</span>
+                              <span>Freight charge</span>
+                              <span>${freightChargeUsd.toFixed(2)}</span>
                             </div>
                             <div className="flex justify-between text-slate-600">
-                              <span>Urgency surcharge</span>
-                              <span>${q.urgency_surcharge_usd.toFixed(2)}</span>
-                            </div>
-                            <div className="flex justify-between text-slate-600">
-                              <span>Distance surcharge</span>
-                              <span>${q.distance_surcharge_usd.toFixed(2)}</span>
-                            </div>
-                            <div className="flex justify-between text-slate-600">
-                              <span>Service fee</span>
-                              <span>${q.service_fee_usd.toFixed(2)}</span>
+                              <span>Platform fee</span>
+                              <span>${platformFeeUsd.toFixed(2)}</span>
                             </div>
                             <div className="mt-2 flex justify-between border-t border-slate-200 pt-2 font-bold text-slate-900">
-                              <span>Total</span>
-                              <span>${q.total_usd.toFixed(2)}</span>
+                              <span>Total paid</span>
+                              <span>${amountUsd.toFixed(2)}</span>
                             </div>
                           </div>
-                        </div>
-
-                        <div className="mt-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
-                          <p>
-                            <span className="font-semibold text-slate-700">Payment State:</span> {paymentStateLabel(shipment.payment_status)}
-                          </p>
-                          <p>
-                            <span className="font-semibold text-slate-700">Transaction Detail:</span> {detail}
-                          </p>
                         </div>
 
                         {q.notes && <p className="mt-2 text-xs text-slate-400">{q.notes}</p>}
@@ -3417,7 +3546,7 @@ export default function CarrierPortalPage() {
                     <div>
                       <p className="text-xs font-semibold uppercase tracking-widest text-slate-400">Invoice Preview</p>
                       <h3 className="mt-1 text-xl font-bold text-slate-900">{selectedInvoice.invoiceNum}</h3>
-                      <p className="mt-1 text-xs text-slate-500">Ref {selectedInvoice.transactionRef}</p>
+                      <p className="mt-1 text-xs text-slate-500">Transaction ID {selectedInvoice.transactionRef}</p>
                     </div>
                     <button
                       type="button"
@@ -3438,14 +3567,12 @@ export default function CarrierPortalPage() {
                       <p className="mt-1 font-medium text-slate-800">{selectedInvoice.shipment.carrier_name ?? session?.displayName}</p>
                     </div>
                     <div>
-                      <p className="text-xs font-semibold uppercase text-slate-400">Route</p>
-                      <p className="mt-1 text-slate-700">{selectedInvoice.shipment.origin} to {selectedInvoice.shipment.destination}</p>
+                      <p className="text-xs font-semibold uppercase text-slate-400">Load</p>
+                      <p className="mt-1 text-slate-700">{selectedInvoice.shipment.load_number}</p>
                     </div>
                     <div>
-                      <p className="text-xs font-semibold uppercase text-slate-400">Transaction</p>
-                      <p className={`mt-1 font-semibold ${selectedInvoice.kind === "purchase" ? "text-emerald-700" : "text-rose-700"}`}>
-                        {selectedInvoice.kind === "purchase" ? "Purchase" : "Void"}
-                      </p>
+                      <p className="text-xs font-semibold uppercase text-slate-400">Route</p>
+                      <p className="mt-1 text-slate-700">{selectedInvoice.shipment.origin} to {selectedInvoice.shipment.destination}</p>
                     </div>
                   </div>
 
@@ -3462,8 +3589,9 @@ export default function CarrierPortalPage() {
                   )}
 
                   <div className="mt-4 rounded-lg border border-slate-200 px-3 py-2 text-xs text-slate-600">
-                    <p><span className="font-semibold text-slate-700">Payment State:</span> {paymentStateLabel(selectedInvoice.shipment.payment_status)}</p>
-                    <p><span className="font-semibold text-slate-700">Transaction Detail:</span> {selectedInvoice.detail}</p>
+                    <p><span className="font-semibold text-slate-700">Status:</span> PAID</p>
+                    <p><span className="font-semibold text-slate-700">Payment Date:</span> {new Date(selectedInvoice.paymentDate).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}</p>
+                    <p><span className="font-semibold text-slate-700">Transaction ID:</span> {selectedInvoice.transactionRef}</p>
                   </div>
 
                   <div className="mt-5 flex justify-end gap-2">
@@ -3473,8 +3601,7 @@ export default function CarrierPortalPage() {
                         onDownloadInvoice({
                           invoiceNum: selectedInvoice.invoiceNum,
                           transactionRef: selectedInvoice.transactionRef,
-                          kind: selectedInvoice.kind,
-                          detail: selectedInvoice.detail,
+                          paymentDate: selectedInvoice.paymentDate,
                           shipment: selectedInvoice.shipment,
                         })
                       }

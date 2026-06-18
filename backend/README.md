@@ -57,6 +57,22 @@ $env:EIA_PRODUCT="EPD2D"
 
 If EIA pricing is unavailable, the backend falls back to `GAS_PRICE_FALLBACK_USD_PER_LITER` (default `1.2`).
 
+Optional: configure signup email verification (6-digit code for shipper/carrier sign-up).
+
+PowerShell:
+
+```powershell
+$env:SIGNUP_SMTP_HOST="smtp-relay.brevo.com"
+$env:SIGNUP_SMTP_PORT="587"
+$env:SIGNUP_SMTP_LOGIN="ae900c001@smtp-brevo.com"
+$env:SIGNUP_SMTP_PASSWORD="your_brevo_smtp_key"
+$env:SIGNUP_SMTP_FROM_EMAIL="ae900c001@smtp-brevo.com"
+$env:SIGNUP_SMTP_FROM_NAME="FreightAxis"
+$env:SIGNUP_EMAIL_CODE_TTL_MINUTES="10"
+```
+
+If SMTP variables are missing, signup code delivery will be unavailable.
+
 4. Start the server:
 
 ```bash

@@ -19,7 +19,7 @@ export type ChatSession = {
   closed_at: string | null;
 };
 
-export interface SupportThreadState extends ChatSession {}
+export type SupportThreadState = ChatSession;
 
 export type ChatMessage = {
   id: string;
@@ -31,7 +31,7 @@ export type ChatMessage = {
   created_at: string;
 };
 
-export interface SupportMessage extends ChatMessage {}
+export type SupportMessage = ChatMessage;
 
 type LegacySupportMessage = {
   id: string;
@@ -195,7 +195,7 @@ export async function fetchChatSession(sessionId: string): Promise<ChatSession |
   }
 }
 
-export async function createChatSession(actor?: SupportActor | null): Promise<ChatSession> {
+export async function createChatSession(): Promise<ChatSession> {
   const supabase = getSupportSupabaseClient();
   const userId = getOrCreateBrowserUserId();
   try {

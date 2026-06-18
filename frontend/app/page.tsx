@@ -10,7 +10,7 @@ import {
 } from "@/lib/auth-lite";
 import GlobeMarketJourneyBackground from "@/app/components/globe-market-journey-background";
 import LiveChatSupport from "@/app/components/live-chat-support";
-import { driverLogin, loginAccount, signupAccount } from "@/lib/logistics-api";
+import { driverLogin, loginAccount, requestSignupVerificationCode, signupAccount } from "@/lib/logistics-api";
 import { trackEvent } from "@/lib/telemetry";
 
 const truckTypeOptions = [
@@ -26,7 +26,7 @@ const truckTypeOptions = [
 ] as const;
 
 type LoginRole = "client" | "carrier" | "driver";
-type LandingView = "landing" | "pricing" | "resources" | "about" | "login" | "signup";
+type LandingView = "landing" | "pricing" | "resources" | "about" | "login" | "signup" | "signup_verify";
 type PricingSubscription = "shipper" | "carrier";
 type ResourceSection = "events";
 
@@ -45,10 +45,11 @@ type SignupState = {
   email: string;
   password: string;
   confirmPassword: string;
+  emailVerificationCode: string;
   role: "client" | "carrier";
 };
 
-type SubmitState = null | "login" | "signup";
+type SubmitState = null | "login" | "signup" | "signup_code";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) {
@@ -719,10 +720,10 @@ function SignupPanel(props: Readonly<{
   submitting: SubmitState;
   onSignupFormChange: (updater: (prev: SignupState) => SignupState) => void;
   onToggleVehicleType: (value: string) => void;
-  onSignup: () => void;
+  onContinue: () => void;
   onBack: () => void;
 }>) {
-  const { signupForm, submitting, onSignupFormChange, onToggleVehicleType, onSignup, onBack } = props;
+  const { signupForm, submitting, onSignupFormChange, onToggleVehicleType, onContinue, onBack } = props;
 
   return (
     <div className="mt-6 space-y-4">
@@ -814,13 +815,67 @@ function SignupPanel(props: Readonly<{
         </button>
       </div>
 
-      <button onClick={onSignup} disabled={submitting === "signup"} className="rounded-xl bg-cyan-500 px-4 py-3 text-sm font-semibold text-[#031227] hover:bg-cyan-400">
-        {submitting === "signup" ? "Creating Account..." : "Create Account"}
+      <button onClick={onContinue} disabled={submitting !== null} className="rounded-xl bg-cyan-500 px-4 py-3 text-sm font-semibold text-[#031227] hover:bg-cyan-400 disabled:opacity-60">
+        {submitting === "signup_code" ? "Sending Code..." : "Continue"}
       </button>
 
       <button onClick={onBack} className="rounded-xl border border-slate-500 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10">
         Back
       </button>
+    </div>
+  );
+}
+
+function SignupVerificationPanel(props: Readonly<{
+  signupForm: SignupState;
+  submitting: SubmitState;
+  debugCode: string | null;
+  onSignupFormChange: (updater: (prev: SignupState) => SignupState) => void;
+  onVerify: () => void;
+  onSendCode: () => void;
+  onBackToForm: () => void;
+}>) {
+  const { signupForm, submitting, debugCode, onSignupFormChange, onVerify, onSendCode, onBackToForm } = props;
+
+  return (
+    <div className="mt-6 space-y-4">
+      <p className="text-xs uppercase tracking-wider text-slate-300">Verify Email</p>
+      <p className="text-sm text-slate-200">
+        Enter the 6-digit code sent to <span className="font-semibold text-cyan-200">{signupForm.email.trim().toLowerCase()}</span>.
+      </p>
+      <input
+        value={signupForm.emailVerificationCode}
+        onChange={(event) => onSignupFormChange((prev) => ({ ...prev, emailVerificationCode: event.target.value.replace(/\D/g, "").slice(0, 6) }))}
+        placeholder="6-digit verification code"
+        maxLength={6}
+        className="w-full rounded-xl border border-slate-600 bg-[#061B34] px-4 py-3 text-sm text-white outline-none ring-cyan-300 placeholder:text-slate-400 focus:ring-2"
+      />
+      <p className="text-sm text-slate-300">
+        Verify your email to continue. Click the button below to send a 6-digit code, then enter it here.
+      </p>
+      {debugCode && (
+        <div className="rounded-xl border border-cyan-300/40 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-100">
+          <p className="font-semibold">Local test code</p>
+          <p className="mt-1 text-lg font-mono tracking-[0.3em] text-cyan-50">{debugCode}</p>
+        </div>
+      )}
+
+      <button onClick={onVerify} disabled={submitting !== null} className="rounded-xl bg-cyan-500 px-4 py-3 text-sm font-semibold text-[#031227] hover:bg-cyan-400 disabled:opacity-60">
+        {submitting === "signup" ? "Verifying..." : "Verify & Create Account"}
+      </button>
+
+      <div className="flex flex-wrap gap-3">
+        <button
+          onClick={onSendCode}
+          disabled={submitting !== null}
+          className="rounded-xl border border-cyan-400/60 px-4 py-3 text-sm font-semibold text-cyan-100 hover:bg-cyan-500/15 disabled:opacity-60"
+        >
+          {submitting === "signup_code" ? "Sending..." : "Send Code"}
+        </button>
+        <button onClick={onBackToForm} disabled={submitting !== null} className="rounded-xl border border-slate-500 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10 disabled:opacity-60">
+          Back to Form
+        </button>
+      </div>
     </div>
   );
 }
@@ -854,9 +909,13 @@ function PageShell(props: Readonly<{
   onLoginFormChange: (updater: (prev: LoginState) => LoginState) => void;
   onSignupFormChange: (updater: (prev: SignupState) => SignupState) => void;
   onToggleVehicleType: (value: string) => void;
+  onRequestSignupCode: () => void;
+  onBackToSignupForm: () => void;
+  signupDebugCode: string | null;
   onSelectPricingSubscription: (subscription: PricingSubscription) => void;
   onSelectResourceSection: (section: ResourceSection) => void;
   onSignup: () => void;
+  onBeginSignupVerification: () => void;
   onBackToLanding: () => void;
 }>) {
   const {
@@ -887,9 +946,13 @@ function PageShell(props: Readonly<{
     onLoginFormChange,
     onSignupFormChange,
     onToggleVehicleType,
+    onRequestSignupCode,
+    onBackToSignupForm,
+    signupDebugCode,
     onSelectPricingSubscription,
     onSelectResourceSection,
     onSignup,
+    onBeginSignupVerification,
     onBackToLanding,
   } = props;
 
@@ -927,6 +990,11 @@ function PageShell(props: Readonly<{
     content = (
       <section className="w-full max-w-xl rounded-3xl border border-cyan-300/25 bg-[#031227]/75 p-7 text-white shadow-[0_20px_80px_rgba(0,0,0,0.45)] backdrop-blur-sm md:p-9">
         {view === "landing" && <LandingPanel message={message} />}
+        {view !== "landing" && message && (
+          <p className="mb-4 rounded-xl border border-amber-300/50 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+            {message}
+          </p>
+        )}
         {view === "login" && (
           <LoginPanel
             loginForm={loginForm}
@@ -945,8 +1013,19 @@ function PageShell(props: Readonly<{
             submitting={submitting}
             onSignupFormChange={onSignupFormChange}
             onToggleVehicleType={onToggleVehicleType}
-            onSignup={onSignup}
+            onContinue={onBeginSignupVerification}
             onBack={onBackToLanding}
+          />
+        )}
+        {view === "signup_verify" && (
+          <SignupVerificationPanel
+            signupForm={signupForm}
+            submitting={submitting}
+            debugCode={signupDebugCode}
+            onSignupFormChange={onSignupFormChange}
+            onVerify={onSignup}
+            onSendCode={onRequestSignupCode}
+            onBackToForm={onBackToSignupForm}
           />
         )}
       </section>
@@ -1009,12 +1088,14 @@ export default function Home() {
     email: "",
     password: "",
     confirmPassword: "",
+    emailVerificationCode: "",
     role: "client",
   });
   const [activeSessionName, setActiveSessionName] = useState<string | null>(null);
   const [activeSessionRole, setActiveSessionRole] = useState<LoginRole | null>(null);
   const [message, setMessage] = useState("");
-  const [submitting, setSubmitting] = useState<null | "login" | "signup">(null);
+  const [signupDebugCode, setSignupDebugCode] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState<SubmitState>(null);
   const loginMenuRef = useRef<HTMLDivElement | null>(null);
 
   function openRoleLogin(role: LoginRole) {
@@ -1139,17 +1220,10 @@ export default function Home() {
     }
   }
 
-  async function signup() {
-    const fullName = signupForm.fullName.trim();
-    const companyName = signupForm.companyName.trim();
-    const taxId = signupForm.taxId.trim();
-    const dotNumber = signupForm.dotNumber.trim();
+  function validateSignupForm(): { email: string; normalizedTaxId: string; normalizedDotNumber: string } | null {
     const email = signupForm.email.trim().toLowerCase();
-    const password = signupForm.password;
-    const isCarrier = signupForm.role === "carrier";
-    const carrierVehicleTypes = signupForm.vehicleTypes.length > 0 ? signupForm.vehicleTypes : ["dry_van"];
-    const normalizedTaxId = taxId.replace(/\D/g, "");
-    const normalizedDotNumber = dotNumber.replace(/\D/g, "");
+    const normalizedTaxId = signupForm.taxId.trim().replace(/\D/g, "");
+    const normalizedDotNumber = signupForm.dotNumber.trim().replace(/\D/g, "");
 
     const validationMessage = getSignupValidationMessage({
       form: signupForm,
@@ -1158,6 +1232,40 @@ export default function Home() {
     });
     if (validationMessage) {
       setMessage(validationMessage);
+      return null;
+    }
+
+    return { email, normalizedTaxId, normalizedDotNumber };
+  }
+
+  async function beginSignupVerification() {
+    const validated = validateSignupForm();
+    if (!validated) {
+      return;
+    }
+
+    setSignupForm((prev) => ({ ...prev, emailVerificationCode: "" }));
+    setSignupDebugCode(null);
+    setView("signup_verify");
+    setMessage("Verify your email to continue.");
+  }
+
+  async function signup() {
+    const fullName = signupForm.fullName.trim();
+    const companyName = signupForm.companyName.trim();
+    const taxId = signupForm.taxId.trim();
+    const dotNumber = signupForm.dotNumber.trim();
+    const email = signupForm.email.trim().toLowerCase();
+    const password = signupForm.password;
+    const verificationCode = signupForm.emailVerificationCode.trim();
+    const isCarrier = signupForm.role === "carrier";
+    const carrierVehicleTypes = signupForm.vehicleTypes.length > 0 ? signupForm.vehicleTypes : ["dry_van"];
+    if (!validateSignupForm()) {
+      return;
+    }
+
+    if (!/^\d{6}$/.test(verificationCode)) {
+      setMessage("Enter the 6-digit verification code sent to your email.");
       return;
     }
 
@@ -1174,15 +1282,39 @@ export default function Home() {
         vehicle_types: isCarrier ? carrierVehicleTypes : null,
         email,
         password,
+        email_verification_code: verificationCode,
         role: signupForm.role,
       });
 
       setAuthLiteSession(account.role, account.display_name, account.email);
       setActiveSessionName(account.display_name);
       setActiveSessionRole(account.role);
+      setSignupDebugCode(null);
       trackEvent("auth.sign_up", { role: account.role, displayName: account.display_name });
       setMessage("");
       navigateToDashboard(account.role);
+    } catch (error: unknown) {
+      setMessage(getErrorMessage(error));
+    } finally {
+      setSubmitting(null);
+    }
+  }
+
+  async function requestSignupCode() {
+    const validated = validateSignupForm();
+    if (!validated) {
+      return;
+    }
+
+    try {
+      setSubmitting("signup_code");
+      const response = await requestSignupVerificationCode({ email: validated.email, role: signupForm.role });
+      setSignupDebugCode(response.debug_code ?? null);
+      setMessage(
+        response.debug_code
+          ? `Verification code sent. Local test code: ${response.debug_code}`
+          : "Verification code sent. Check your email and enter the 6-digit code to continue."
+      );
     } catch (error: unknown) {
       setMessage(getErrorMessage(error));
     } finally {
@@ -1232,10 +1364,19 @@ export default function Home() {
         onLoginFormChange={setLoginForm}
         onSignupFormChange={setSignupForm}
         onToggleVehicleType={toggleSignupCarrierVehicleType}
+        onRequestSignupCode={requestSignupCode}
+        onBackToSignupForm={() => {
+          setSignupDebugCode(null);
+          setView("signup");
+          setMessage("");
+        }}
+        signupDebugCode={signupDebugCode}
         onSelectPricingSubscription={setPricingSubscription}
         onSelectResourceSection={setResourceSection}
         onSignup={signup}
+        onBeginSignupVerification={beginSignupVerification}
         onBackToLanding={() => {
+          setSignupDebugCode(null);
           setMessage("");
           setView("landing");
         }}

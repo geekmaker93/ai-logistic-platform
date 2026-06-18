@@ -5,8 +5,11 @@ import json
 import base64
 import hashlib
 import hmac
+import re
+import smtplib
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from enum import Enum
 from math import inf
 from typing import Literal, cast
@@ -86,6 +89,15 @@ FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://127.0.0.1:3000").stri
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
 STRIPE_CLIENT_PRICE_ID = os.getenv("STRIPE_CLIENT_PRICE_ID", "").strip()
 STRIPE_CARRIER_PRICE_ID = os.getenv("STRIPE_CARRIER_PRICE_ID", "").strip()
+SIGNUP_EMAIL_CODE_TTL_MINUTES = int(os.getenv("SIGNUP_EMAIL_CODE_TTL_MINUTES", "10"))
+SIGNUP_EMAIL_CODE_DEBUG = os.getenv("SIGNUP_EMAIL_CODE_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+SIGNUP_SMTP_HOST = os.getenv("SIGNUP_SMTP_HOST", "").strip()
+SIGNUP_SMTP_PORT = int(os.getenv("SIGNUP_SMTP_PORT", "587"))
+SIGNUP_SMTP_LOGIN = os.getenv("SIGNUP_SMTP_LOGIN", "").strip()
+SIGNUP_SMTP_PASSWORD = os.getenv("SIGNUP_SMTP_PASSWORD", "").strip()
+SIGNUP_SMTP_FROM_EMAIL = os.getenv("SIGNUP_SMTP_FROM_EMAIL", SIGNUP_SMTP_LOGIN).strip()
+SIGNUP_SMTP_FROM_NAME = os.getenv("SIGNUP_SMTP_FROM_NAME", "FreightAxis").strip()
+SHIPPER_REVIEW_PERIOD_HOURS = float(os.getenv("SHIPPER_REVIEW_PERIOD_HOURS", "0"))
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "").strip()
 MAX_SIGNUP_ID_DOCUMENT_BYTES = 5 * 1024 * 1024
 ALLOWED_SIGNUP_ID_MIME_TYPES = {"application/pdf", "image/jpeg", "image/png"}
@@ -97,6 +109,7 @@ PAYOUT_STATUS_RELEASED = "released"
 PAYOUT_STATUS_PENDING_CONNECT = "pending_connect_account"
 POD_STATUS_PENDING = "pending"
 POD_STATUS_UPLOADED = "uploaded"
+POD_STATUS_CARRIER_CONFIRMED = "carrier_confirmed"
 POD_STATUS_REVIEWED = "reviewed"
 
 if stripe is not None and STRIPE_SECRET_KEY:
@@ -197,6 +210,7 @@ class RouteOption(BaseModel):
 
 class ShipmentRecord(BaseModel):
 	id: str
+	load_number: str
 	client_name: str
 	carrier_name: str | None
 	assigned_driver_id: str | None
@@ -220,10 +234,15 @@ class ShipmentRecord(BaseModel):
 	status_history: list[dict[str, str]]
 	estimated_arrival: datetime | None
 	payment_intent_id: str | None
+	payment_completed_at: datetime | None
+	invoice_number: str | None
+	invoice_generated_at: datetime | None
 	payout_status: str | None
 	payout_transfer_id: str | None
 	pod_status: str
 	pod_uploaded_at: datetime | None
+	pod_confirmed_at: datetime | None
+	payout_release_eligible_at: datetime | None
 
 
 class CarrierQuoteDetailsInput(BaseModel):
@@ -345,7 +364,18 @@ class AuthSignupRequest(BaseModel):
 	service_regions: list[str] | None = None
 	email: str = Field(min_length=4, max_length=320)
 	password: str = Field(min_length=8, max_length=120)
+	email_verification_code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
 	role: Literal["client", "carrier"]
+
+
+class AuthSignupVerificationCodeRequest(BaseModel):
+	email: str = Field(min_length=4, max_length=320)
+	role: Literal["client", "carrier"]
+
+
+class AuthSignupVerificationCodeResponse(BaseModel):
+	detail: str
+	debug_code: str | None = None
 
 
 class AuthLoginRequest(BaseModel):
@@ -448,20 +478,25 @@ class BillingStatusResponse(BaseModel):
 	subscription_status: str | None
 	subscription_plan: str | None
 	subscription_current_period_end: datetime | None
+	subscription_cancel_at_period_end: bool = False
 
 
 class BillingCheckoutRequest(BaseModel):
+	return_url: str | None = Field(default=None, max_length=500)
 	success_url: str | None = Field(default=None, max_length=500)
 	cancel_url: str | None = Field(default=None, max_length=500)
 
 
 class BillingCheckoutResponse(BaseModel):
+	client_secret: str | None = None
 	checkout_url: str
 
 
 class ShipmentPaymentCheckoutRequest(BaseModel):
+	return_url: str | None = Field(default=None, max_length=500)
 	success_url: str | None = Field(default=None, max_length=500)
 	cancel_url: str | None = Field(default=None, max_length=500)
+	embedded: bool = True
 
 
 class BillingPaymentMethodSetupRequest(BaseModel):
@@ -688,10 +723,15 @@ class ShipmentModel(Base):
 	status_history: Mapped[list[dict[str, str]]] = mapped_column(JSON, nullable=False, default=list)
 	estimated_arrival: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 	payment_intent_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+	payment_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+	invoice_number: Mapped[str | None] = mapped_column(String(24), nullable=True)
+	invoice_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 	payout_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
 	payout_transfer_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
 	pod_status: Mapped[str | None] = mapped_column(String(24), nullable=True)
 	pod_uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+	pod_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+	payout_release_eligible_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class UserModel(Base):
@@ -786,6 +826,18 @@ class SignupIdentityDocumentModel(Base):
 	document_name: Mapped[str] = mapped_column(String(180), nullable=False)
 	document_mime_type: Mapped[str] = mapped_column(String(80), nullable=False)
 	document_base64: Mapped[str] = mapped_column(Text, nullable=False)
+	created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class SignupEmailVerificationModel(Base):
+	__tablename__ = "signup_email_verifications"
+	__table_args__ = (UniqueConstraint("email", "role", name="uq_signup_email_verifications_email_role"),)
+
+	id: Mapped[str] = mapped_column(String(64), primary_key=True)
+	email: Mapped[str] = mapped_column(String(320), nullable=False)
+	role: Mapped[str] = mapped_column(String(16), nullable=False)
+	code_hash: Mapped[str] = mapped_column(String(256), nullable=False)
+	expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 	created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -919,6 +971,82 @@ def verify_password(password: str, stored_hash: str) -> bool:
 	return hmac.compare_digest(calculated, expected_digest)
 
 
+def is_valid_email(email: str) -> bool:
+	return bool(re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email))
+
+
+def generate_signup_verification_code() -> str:
+	return f"{int.from_bytes(os.urandom(4), byteorder='big') % 1_000_000:06d}"
+
+
+def send_signup_verification_email(recipient_email: str, code: str) -> None:
+	if not SIGNUP_SMTP_HOST or not SIGNUP_SMTP_LOGIN or not SIGNUP_SMTP_PASSWORD:
+		raise HTTPException(
+			status_code=503,
+			detail="Email verification is not configured. Please set SMTP environment variables.",
+		)
+
+	message = EmailMessage()
+	message["Subject"] = "Your FreightAxis verification code"
+	message["From"] = (
+		f"{SIGNUP_SMTP_FROM_NAME} <{SIGNUP_SMTP_FROM_EMAIL}>"
+		if SIGNUP_SMTP_FROM_NAME
+		else SIGNUP_SMTP_FROM_EMAIL
+	)
+	message["To"] = recipient_email
+	message.set_content(
+		"Use this 6-digit verification code to complete your FreightAxis sign-up:\n\n"
+		f"{code}\n\n"
+		f"This code expires in {SIGNUP_EMAIL_CODE_TTL_MINUTES} minutes."
+	)
+
+	try:
+		with smtplib.SMTP(SIGNUP_SMTP_HOST, SIGNUP_SMTP_PORT, timeout=20) as smtp:
+			smtp.ehlo()
+			smtp.starttls()
+			smtp.login(SIGNUP_SMTP_LOGIN, SIGNUP_SMTP_PASSWORD)
+			smtp.send_message(message)
+	except Exception:
+		raise HTTPException(
+			status_code=503,
+			detail="Unable to send verification code email right now. Please try again.",
+		)
+
+
+def should_expose_signup_code_for_debug() -> bool:
+	if SIGNUP_EMAIL_CODE_DEBUG:
+		return True
+	frontend = FRONTEND_BASE_URL.lower()
+	return frontend.startswith("http://127.0.0.1") or frontend.startswith("http://localhost")
+
+
+def verify_and_consume_signup_email_code(
+	db: Session,
+	*,
+	email: str,
+	role: Literal["client", "carrier"],
+	verification_code: str,
+) -> None:
+	record = db.scalar(
+		select(SignupEmailVerificationModel).where(
+			SignupEmailVerificationModel.email == email,
+			SignupEmailVerificationModel.role == role,
+		)
+	)
+	if record is None:
+		raise HTTPException(status_code=400, detail="Verification code required. Request a new 6-digit code.")
+
+	if record.expires_at < utc_now():
+		db.delete(record)
+		db.commit()
+		raise HTTPException(status_code=400, detail="Verification code expired. Request a new code.")
+
+	if not verify_password(verification_code, record.code_hash):
+		raise HTTPException(status_code=400, detail="Invalid verification code.")
+
+	db.delete(record)
+
+
 def plan_for_role(role: str) -> Literal["client", "carrier"]:
 	return "carrier" if role == "carrier" else "client"
 
@@ -944,10 +1072,9 @@ def subscription_is_active(user: UserModel) -> bool:
 def require_subscription_active(user: UserModel) -> None:
 	if subscription_is_active(user):
 		return
-	price_usd = "49.99" if user.role == "carrier" else "25.00"
 	raise HTTPException(
 		status_code=402,
-		detail=f"Active subscription required for {user.role} role (${price_usd}/month).",
+		detail="Subscription required. Please activate your plan to continue.",
 	)
 
 
@@ -1119,6 +1246,57 @@ def sync_user_subscription_from_stripe(db: Session, user: UserModel) -> None:
 	db.add(user)
 	db.commit()
 	db.refresh(user)
+
+
+def get_manageable_stripe_subscription(user: UserModel):
+	if not user.stripe_customer_id:
+		raise HTTPException(status_code=409, detail="No Stripe customer is linked to this account.")
+
+	require_stripe_ready()
+	price_id = stripe_price_id_for_role(user.role)
+	subscriptions = stripe.Subscription.list(  # type: ignore[union-attr]
+		customer=user.stripe_customer_id,
+		status="all",
+		limit=25,
+	)
+
+	fallback = None
+	for item in getattr(subscriptions, "data", []) or []:
+		items = getattr(item, "items", None)
+		first_item = items.data[0] if items and getattr(items, "data", None) else None
+		price = getattr(first_item, "price", None) if first_item is not None else None
+		item_price_id = getattr(price, "id", None) if price is not None else None
+		status = str(getattr(item, "status", "") or "")
+
+		if price_id and item_price_id == price_id and status in {"active", "trialing", "past_due", "unpaid"}:
+			return item
+		if fallback is None and status in {"active", "trialing"}:
+			fallback = item
+
+	if fallback is not None:
+		return fallback
+
+	raise HTTPException(status_code=409, detail="No active subscription found to manage.")
+
+
+def build_billing_status_response(db: Session, user: UserModel, role: Literal["client", "carrier"]) -> BillingStatusResponse:
+	cancel_at_period_end = False
+	if user.stripe_customer_id and stripe is not None and STRIPE_SECRET_KEY:
+		sync_user_subscription_from_stripe(db, user)
+		try:
+			subscription = get_manageable_stripe_subscription(user)
+			cancel_at_period_end = bool(getattr(subscription, "cancel_at_period_end", False))
+		except HTTPException:
+			cancel_at_period_end = False
+
+	return BillingStatusResponse(
+		role=role,
+		subscription_active=subscription_is_active(user),
+		subscription_status=user.subscription_status,
+		subscription_plan=user.subscription_plan,
+		subscription_current_period_end=user.subscription_current_period_end,
+		subscription_cancel_at_period_end=cancel_at_period_end,
+	)
 
 
 def normalize_driver_name(name: str) -> str:
@@ -1504,10 +1682,15 @@ def ensure_compatible_schema() -> None:
 			"carrier_offer_amount": "FLOAT",
 			"shipper_approved_amount": "FLOAT",
 			"payment_intent_id": "VARCHAR(120)",
+			"payment_completed_at": "DATETIME",
+			"invoice_number": "VARCHAR(24)",
+			"invoice_generated_at": "DATETIME",
 			"payout_status": "VARCHAR(32)",
 			"payout_transfer_id": "VARCHAR(120)",
 			"pod_status": "VARCHAR(24)",
 			"pod_uploaded_at": "DATETIME",
+			"pod_confirmed_at": "DATETIME",
+			"payout_release_eligible_at": "DATETIME",
 		}
 	)
 	carrier_settings_columns = {
@@ -1562,6 +1745,7 @@ def serialize_shipment(model: ShipmentModel) -> ShipmentRecord:
 
 	return ShipmentRecord(
 		id=model.id,
+		load_number=shipment_load_number(model.id),
 		client_name=model.client_name,
 		carrier_name=model.carrier_name,
 		assigned_driver_id=model.assigned_driver_id,
@@ -1585,10 +1769,15 @@ def serialize_shipment(model: ShipmentModel) -> ShipmentRecord:
 		status_history=history,
 		estimated_arrival=model.estimated_arrival,
 		payment_intent_id=model.payment_intent_id,
+		payment_completed_at=model.payment_completed_at,
+		invoice_number=model.invoice_number,
+		invoice_generated_at=model.invoice_generated_at,
 		payout_status=model.payout_status,
 		payout_transfer_id=model.payout_transfer_id,
 		pod_status=model.pod_status or POD_STATUS_PENDING,
 		pod_uploaded_at=model.pod_uploaded_at,
+		pod_confirmed_at=model.pod_confirmed_at,
+		payout_release_eligible_at=model.payout_release_eligible_at,
 	)
 
 
@@ -2455,6 +2644,35 @@ def shipment_offer_amount(shipment: ShipmentModel) -> float | None:
 	return None
 
 
+def shipment_load_number(shipment_id: str) -> str:
+	digits = int(hashlib.sha256(shipment_id.encode("utf-8")).hexdigest()[:10], 16) % 100000
+	return f"FX-{digits:05d}"
+
+
+def generate_invoice_number(db: Session, issued_at: datetime) -> str:
+	year = issued_at.year
+	prefix = f"INV-{year}-"
+	values = db.scalars(select(ShipmentModel.invoice_number).where(ShipmentModel.invoice_number.like(f"{prefix}%"))).all()
+	max_serial = 0
+	for value in values:
+		if not value or not value.startswith(prefix):
+			continue
+		serial_text = value[len(prefix):]
+		if serial_text.isdigit():
+			max_serial = max(max_serial, int(serial_text))
+	return f"{prefix}{max_serial + 1:06d}"
+
+
+def ensure_paid_invoice(db: Session, shipment: ShipmentModel, paid_at: datetime) -> None:
+	if shipment.invoice_number:
+		if shipment.invoice_generated_at is None:
+			shipment.invoice_generated_at = paid_at
+		return
+
+	shipment.invoice_number = generate_invoice_number(db, paid_at)
+	shipment.invoice_generated_at = paid_at
+
+
 def get_shipment_carrier_id(shipment: ShipmentModel) -> str | None:
 	carrier_name = (shipment.carrier_name or "").strip()
 	if not carrier_name:
@@ -2534,17 +2752,70 @@ def release_carrier_payout_if_ready(db: Session, shipment: ShipmentModel) -> Non
 		return
 
 	if stripe is not None and STRIPE_SECRET_KEY and carrier_user.stripe_connect_account_id:
-		transfer = stripe.Transfer.create(  # type: ignore[union-attr]
-			amount=max(50, int(round(amount * 100))),
-			currency="usd",
-			destination=carrier_user.stripe_connect_account_id,
-			metadata={"shipment_id": shipment.id, "carrier_user_id": carrier_user.id},
-		)
-		shipment.payout_transfer_id = transfer.id
-		shipment.payout_status = PAYOUT_STATUS_RELEASED
-		return
+		try:
+			transfer = stripe.Transfer.create(  # type: ignore[union-attr]
+				amount=max(50, int(round(amount * 100))),
+				currency="usd",
+				destination=carrier_user.stripe_connect_account_id,
+				metadata={"shipment_id": shipment.id, "carrier_user_id": carrier_user.id},
+			)
+			shipment.payout_transfer_id = transfer.id
+			shipment.payout_status = PAYOUT_STATUS_RELEASED
+			return
+		except Exception as error:
+			shipment.payout_transfer_id = None
+			shipment.payout_status = PAYOUT_STATUS_PENDING
+			set_shipment_status_note(
+				shipment,
+				shipment.status,
+				"Stripe payout transfer failed; payout remains pending.",
+			)
+			shipment.updated_at = utc_now()
+			return
 
 	shipment.payout_status = PAYOUT_STATUS_RELEASED
+
+
+def review_release_eligible_at(confirmed_at: datetime) -> datetime:
+	if confirmed_at.tzinfo is None:
+		confirmed_at = confirmed_at.replace(tzinfo=timezone.utc)
+	review_hours = max(SHIPPER_REVIEW_PERIOD_HOURS, 0.0)
+	if review_hours <= 0:
+		return confirmed_at
+	return confirmed_at + timedelta(hours=review_hours)
+
+
+def advance_payout_lifecycle_if_ready(db: Session, shipment: ShipmentModel) -> None:
+	if shipment.payment_status != "paid":
+		return
+	if shipment.status != ShipmentStatus.delivered.value:
+		return
+	if shipment.payout_status == PAYOUT_STATUS_RELEASED:
+		return
+
+	pod_status = shipment.pod_status or POD_STATUS_PENDING
+	if pod_status != POD_STATUS_CARRIER_CONFIRMED:
+		return
+
+	eligible_at = shipment.payout_release_eligible_at
+	if eligible_at is None and shipment.pod_confirmed_at is not None:
+		eligible_at = review_release_eligible_at(shipment.pod_confirmed_at)
+		shipment.payout_release_eligible_at = eligible_at
+	elif eligible_at is not None and eligible_at.tzinfo is None:
+		eligible_at = eligible_at.replace(tzinfo=timezone.utc)
+		shipment.payout_release_eligible_at = eligible_at
+
+	if eligible_at is None or utc_now() < eligible_at:
+		return
+
+	shipment.pod_status = POD_STATUS_REVIEWED
+	set_shipment_status_note(
+		shipment,
+		shipment.status,
+		"Shipper review window elapsed. POD auto-reviewed and payout released.",
+	)
+	shipment.updated_at = utc_now()
+	release_carrier_payout_if_ready(db, shipment)
 
 
 def carrier_can_view_offer(shipment: ShipmentModel, carrier_name: str) -> bool:
@@ -2704,12 +2975,61 @@ def health() -> dict[str, str]:
 	return {"status": "ok", "database": DATABASE_URL.split(":", 1)[0]}
 
 
+@app.post("/auth/signup/request-verification-code", response_model=AuthSignupVerificationCodeResponse)
+def request_signup_verification_code(payload: AuthSignupVerificationCodeRequest) -> AuthSignupVerificationCodeResponse:
+	email = normalize_email(payload.email)
+	if not is_valid_email(email):
+		raise HTTPException(status_code=400, detail="Enter a valid email address.")
+
+	role = payload.role
+	with get_session() as db:
+		existing_user = db.scalar(select(UserModel).where(UserModel.email == email, UserModel.role == role))
+		if existing_user is not None:
+			raise HTTPException(status_code=409, detail="An account already exists for this email and role.")
+
+	code = generate_signup_verification_code()
+	send_signup_verification_email(email, code)
+
+	with get_session() as db:
+		now = utc_now()
+		expires_at = now + timedelta(minutes=max(SIGNUP_EMAIL_CODE_TTL_MINUTES, 1))
+		record = db.scalar(
+			select(SignupEmailVerificationModel).where(
+				SignupEmailVerificationModel.email == email,
+				SignupEmailVerificationModel.role == role,
+			)
+		)
+
+		if record is None:
+			record = SignupEmailVerificationModel(
+				id=str(uuid4()),
+				email=email,
+				role=role,
+				code_hash=hash_password(code),
+				expires_at=expires_at,
+				created_at=now,
+			)
+			db.add(record)
+		else:
+			record.code_hash = hash_password(code)
+			record.expires_at = expires_at
+			record.created_at = now
+
+		db.commit()
+
+	return AuthSignupVerificationCodeResponse(
+		detail="Verification code sent.",
+		debug_code=code if should_expose_signup_code_for_debug() else None,
+	)
+
+
 @app.post("/auth/signup", response_model=AuthSessionResponse)
 def signup(payload: AuthSignupRequest) -> AuthSessionResponse:
 	full_name = payload.full_name.strip()
 	company_name = payload.company_name.strip()
 	email = normalize_email(payload.email)
 	password = payload.password
+	verification_code = payload.email_verification_code.strip()
 	role = payload.role
 	is_carrier = role == "carrier"
 	id_document_name, id_document_mime_type, id_document_base64 = validate_signup_identity_document(
@@ -2743,6 +3063,12 @@ def signup(payload: AuthSignupRequest) -> AuthSessionResponse:
 			is_carrier=is_carrier,
 			normalized_tax_id=normalized_tax_id,
 			normalized_dot_number=normalized_dot_number,
+		)
+		verify_and_consume_signup_email_code(
+			db,
+			email=email,
+			role=role,
+			verification_code=verification_code,
 		)
 
 		formatted_tax_id = (
@@ -2807,7 +3133,8 @@ def signup(payload: AuthSignupRequest) -> AuthSessionResponse:
 				updated_at=utc_now(),
 			)
 			db.add(settings)
-			db.commit()
+
+		db.commit()
 		return user_to_auth_session(user)
 
 
@@ -3031,15 +3358,7 @@ def get_subscription_status(
 ) -> BillingStatusResponse:
 	with get_session() as db:
 		user = get_user_by_identity(db, email, role, require_subscription=False)
-		if user.stripe_customer_id and stripe is not None and STRIPE_SECRET_KEY:
-			sync_user_subscription_from_stripe(db, user)
-		return BillingStatusResponse(
-			role=role,
-			subscription_active=subscription_is_active(user),
-			subscription_status=user.subscription_status,
-			subscription_plan=user.subscription_plan,
-			subscription_current_period_end=user.subscription_current_period_end,
-		)
+		return build_billing_status_response(db, user, role)
 
 
 @app.post("/billing/checkout-session", response_model=BillingCheckoutResponse)
@@ -3053,10 +3372,8 @@ def create_billing_checkout_session(
 	if not price_id:
 		raise HTTPException(status_code=503, detail=f"Stripe price is not configured for role: {role}.")
 
-	default_success = f"{FRONTEND_BASE_URL.rstrip('/')}/{role}?billing=success"
-	default_cancel = f"{FRONTEND_BASE_URL.rstrip('/')}/{role}?billing=cancel"
-	success_url = (payload.success_url or default_success).strip()
-	cancel_url = (payload.cancel_url or default_cancel).strip()
+	default_return_url = f"{FRONTEND_BASE_URL.rstrip('/')}/{role}?billing=success"
+	return_url = (payload.return_url or payload.success_url or default_return_url).strip()
 
 	with get_session() as db:
 		user = get_user_by_identity(db, email, role, require_subscription=False)
@@ -3064,17 +3381,18 @@ def create_billing_checkout_session(
 
 		session = stripe.checkout.Session.create(  # type: ignore[union-attr]
 			mode="subscription",
+			ui_mode="embedded",
 			customer=customer_id,
 			line_items=[{"price": price_id, "quantity": 1}],
-			success_url=success_url,
-			cancel_url=cancel_url,
+			return_url=return_url,
 			allow_promotion_codes=True,
 			metadata={"user_id": user.id, "role": user.role},
 		)
 
-		if not session.url:
-			raise HTTPException(status_code=502, detail="Stripe checkout session did not return a URL.")
-		return BillingCheckoutResponse(checkout_url=session.url)
+		client_secret = getattr(session, "client_secret", None)
+		if not client_secret:
+			raise HTTPException(status_code=502, detail="Stripe embedded checkout session did not return a client secret.")
+		return BillingCheckoutResponse(client_secret=client_secret, checkout_url="")
 
 
 @app.post("/shipments/{shipment_id}/payment-checkout", response_model=BillingCheckoutResponse)
@@ -3104,16 +3422,18 @@ def create_shipment_payment_checkout_session(
 
 		amount_cents = max(50, int(round(amount * 100)))
 		base_client_url = f"{FRONTEND_BASE_URL.rstrip('/')}/client"
-		default_success = f"{base_client_url}?shipmentPayment=success&shipmentId={shipment.id}&checkoutSessionId={{CHECKOUT_SESSION_ID}}"
-		default_cancel = f"{base_client_url}?shipmentPayment=cancel&shipmentId={shipment.id}"
-		success_url = (payload.success_url or default_success).strip()
-		cancel_url = (payload.cancel_url or default_cancel).strip()
+		default_return_url = f"{base_client_url}?shipmentPayment=success&shipmentId={shipment.id}&checkoutSessionId={{CHECKOUT_SESSION_ID}}"
+		default_success_url = f"{base_client_url}?shipmentPayment=success&shipmentId={shipment.id}&checkoutSessionId={{CHECKOUT_SESSION_ID}}"
+		default_cancel_url = f"{base_client_url}?shipmentPayment=cancel&shipmentId={shipment.id}"
+		return_url = (payload.success_url or payload.return_url or default_return_url).strip()
+		success_url = (payload.success_url or payload.return_url or default_success_url).strip()
+		cancel_url = (payload.cancel_url or default_cancel_url).strip()
 
 		customer_id = ensure_stripe_customer_id(db, user)
-		session = stripe.checkout.Session.create(  # type: ignore[union-attr]
-			mode="payment",
-			customer=customer_id,
-			line_items=[
+		common_session_payload = {
+			"mode": "payment",
+			"customer": customer_id,
+			"line_items": [
 				{
 					"price_data": {
 						"currency": "usd",
@@ -3126,25 +3446,39 @@ def create_shipment_payment_checkout_session(
 					"quantity": 1,
 				}
 			],
-			success_url=success_url,
-			cancel_url=cancel_url,
-			metadata={
+			"metadata": {
 				"shipment_id": shipment.id,
 				"client_name": shipment.client_name,
 				"carrier_name": shipment.carrier_name or "",
 			},
-			payment_intent_data={
+			"payment_intent_data": {
 				"metadata": {
 					"shipment_id": shipment.id,
 					"client_name": shipment.client_name,
 					"carrier_name": shipment.carrier_name or "",
 				}
 			},
-		)
+		}
 
+		if payload.embedded:
+			session = stripe.checkout.Session.create(  # type: ignore[union-attr]
+				ui_mode="embedded",
+				return_url=return_url,
+				**common_session_payload,
+			)
+			client_secret = getattr(session, "client_secret", None)
+			if not client_secret:
+				raise HTTPException(status_code=502, detail="Stripe embedded checkout session did not return a client secret.")
+			return BillingCheckoutResponse(client_secret=client_secret, checkout_url="")
+
+		session = stripe.checkout.Session.create(  # type: ignore[union-attr]
+			success_url=success_url,
+			cancel_url=cancel_url,
+			**common_session_payload,
+		)
 		if not session.url:
 			raise HTTPException(status_code=502, detail="Stripe checkout session did not return a URL.")
-		return BillingCheckoutResponse(checkout_url=session.url)
+		return BillingCheckoutResponse(client_secret=None, checkout_url=session.url)
 
 
 @app.post("/billing/payment-method-setup-session", response_model=BillingCheckoutResponse)
@@ -3341,14 +3675,51 @@ def refresh_subscription_status(
 ) -> BillingStatusResponse:
 	with get_session() as db:
 		user = get_user_by_identity(db, email, role, require_subscription=False)
-		sync_user_subscription_from_stripe(db, user)
-		return BillingStatusResponse(
-			role=role,
-			subscription_active=subscription_is_active(user),
-			subscription_status=user.subscription_status,
-			subscription_plan=user.subscription_plan,
-			subscription_current_period_end=user.subscription_current_period_end,
+		return build_billing_status_response(db, user, role)
+
+
+@app.post("/billing/subscription-cancel", response_model=BillingStatusResponse)
+def cancel_subscription(
+	email: str = Query(min_length=4, max_length=320),
+	role: Literal["client", "carrier"] = Query(),
+) -> BillingStatusResponse:
+	"""Schedule cancellation at end of current billing period so access remains active until then."""
+	require_stripe_ready()
+	with get_session() as db:
+		user = get_user_by_identity(db, email, role, require_subscription=False)
+		subscription = get_manageable_stripe_subscription(user)
+		subscription_id = getattr(subscription, "id", None)
+		if not subscription_id:
+			raise HTTPException(status_code=502, detail="Stripe subscription ID was not returned.")
+
+		stripe.Subscription.modify(  # type: ignore[union-attr]
+			subscription_id,
+			cancel_at_period_end=True,
 		)
+
+		return build_billing_status_response(db, user, role)
+
+
+@app.post("/billing/subscription-resume", response_model=BillingStatusResponse)
+def resume_subscription(
+	email: str = Query(min_length=4, max_length=320),
+	role: Literal["client", "carrier"] = Query(),
+) -> BillingStatusResponse:
+	"""Undo a scheduled cancellation so the subscription auto-renews as normal."""
+	require_stripe_ready()
+	with get_session() as db:
+		user = get_user_by_identity(db, email, role, require_subscription=False)
+		subscription = get_manageable_stripe_subscription(user)
+		subscription_id = getattr(subscription, "id", None)
+		if not subscription_id:
+			raise HTTPException(status_code=502, detail="Stripe subscription ID was not returned.")
+
+		stripe.Subscription.modify(  # type: ignore[union-attr]
+			subscription_id,
+			cancel_at_period_end=False,
+		)
+
+		return build_billing_status_response(db, user, role)
 
 
 @app.get("/carrier/drivers", response_model=list[CarrierDriverSummaryResponse])
@@ -3627,6 +3998,8 @@ def upload_driver_document(payload: DriverDocumentUploadRequest) -> DriverDocume
 			if shipment is not None:
 				shipment.pod_status = POD_STATUS_UPLOADED
 				shipment.pod_uploaded_at = utc_now()
+				shipment.pod_confirmed_at = None
+				shipment.payout_release_eligible_at = None
 				shipment.updated_at = utc_now()
 				set_shipment_status_note(
 					shipment,
@@ -3909,10 +4282,20 @@ def list_shipments(
 		if role == ActorRole.client:
 			query = select(ShipmentModel).where(ShipmentModel.client_name == name)
 			rows = db.scalars(query.order_by(ShipmentModel.created_at.desc())).all()
+			for item in rows:
+				advance_payout_lifecycle_if_ready(db, item)
+			db.commit()
+			for item in rows:
+				db.refresh(item)
 			return [serialize_shipment(item) for item in rows]
 
 		rows = db.scalars(select(ShipmentModel).order_by(ShipmentModel.created_at.desc())).all()
 		visible = [item for item in rows if carrier_can_view_offer(item, name)]
+		for item in visible:
+			advance_payout_lifecycle_if_ready(db, item)
+		db.commit()
+		for item in visible:
+			db.refresh(item)
 		return [serialize_shipment(item) for item in visible]
 
 
@@ -4137,10 +4520,15 @@ def rebook_carrier_from_history(
 			status_history=status_history,
 			estimated_arrival=None,
 			payment_intent_id=None,
+			payment_completed_at=None,
+			invoice_number=None,
+			invoice_generated_at=None,
 			payout_status=PAYOUT_STATUS_PENDING,
 			payout_transfer_id=None,
 			pod_status=POD_STATUS_PENDING,
 			pod_uploaded_at=None,
+			pod_confirmed_at=None,
+			payout_release_eligible_at=None,
 		)
 
 		db.add(shipment)
@@ -4222,12 +4610,57 @@ def create_shipment(
 		status_history=status_history,
 		estimated_arrival=None,
 		payment_intent_id=None,
+		payment_completed_at=None,
+		invoice_number=None,
+		invoice_generated_at=None,
 		payout_status=PAYOUT_STATUS_PENDING,
 		payout_transfer_id=None,
 		pod_status=POD_STATUS_PENDING,
 		pod_uploaded_at=None,
+		pod_confirmed_at=None,
+		payout_release_eligible_at=None,
 	)
 	with get_session() as db:
+		db.add(shipment)
+		db.commit()
+		db.refresh(shipment)
+		return serialize_shipment(shipment)
+
+
+@app.post("/shipments/{shipment_id}/carrier-confirm-pod", response_model=ShipmentRecord)
+def carrier_confirm_pod(
+	shipment_id: str,
+	actor_role: ActorRole | None = Query(default=None, alias="as"),
+	actor_name: str | None = Query(default=None, alias="name"),
+) -> ShipmentRecord:
+	role, name = require_actor_context(actor_role, actor_name)
+	if role != ActorRole.carrier:
+		raise HTTPException(status_code=403, detail="Only carriers can confirm POD.")
+
+	with get_session() as db:
+		require_subscription_for_actor(db, role, name)
+		shipment = get_shipment_model(db, shipment_id)
+		if shipment.carrier_name != name:
+			raise HTTPException(status_code=403, detail="Carrier does not have access to confirm POD for this shipment.")
+		if shipment.status != ShipmentStatus.delivered.value:
+			raise HTTPException(status_code=409, detail="Shipment must be delivered before confirming POD.")
+		if shipment.payment_status != "paid":
+			raise HTTPException(status_code=409, detail="Shipment payment must be completed before confirming POD.")
+		if (shipment.pod_status or POD_STATUS_PENDING) != POD_STATUS_UPLOADED:
+			raise HTTPException(status_code=409, detail="Driver must upload POD before carrier confirmation.")
+
+		now = utc_now()
+		shipment.pod_status = POD_STATUS_CARRIER_CONFIRMED
+		shipment.pod_confirmed_at = now
+		shipment.payout_release_eligible_at = review_release_eligible_at(now)
+		shipment.updated_at = now
+		set_shipment_status_note(
+			shipment,
+			shipment.status,
+			"Carrier confirmed POD. Shipper review window started.",
+		)
+		advance_payout_lifecycle_if_ready(db, shipment)
+
 		db.add(shipment)
 		db.commit()
 		db.refresh(shipment)
@@ -4253,18 +4686,20 @@ def release_payment(
 			raise HTTPException(status_code=409, detail="Shipment must be marked delivered before releasing payment.")
 		if shipment.payment_status != "paid":
 			raise HTTPException(status_code=409, detail="Shipment payment must be completed before releasing payout.")
-		if (shipment.pod_status or POD_STATUS_PENDING) != POD_STATUS_UPLOADED:
-			raise HTTPException(status_code=409, detail="POD must be uploaded before releasing payment.")
+		pod_status = shipment.pod_status or POD_STATUS_PENDING
+		if pod_status not in {POD_STATUS_CARRIER_CONFIRMED, POD_STATUS_REVIEWED}:
+			raise HTTPException(status_code=409, detail="Carrier must confirm POD before shipper review completion.")
 		if shipment.payout_status == PAYOUT_STATUS_RELEASED:
 			raise HTTPException(status_code=409, detail="Carrier payout has already been released.")
 
 		shipment.pod_status = POD_STATUS_REVIEWED
+		shipment.payout_release_eligible_at = utc_now()
 		shipment.updated_at = utc_now()
 		release_carrier_payout_if_ready(db, shipment)
 		set_shipment_status_note(
 			shipment,
 			shipment.status,
-			payload.note or "Shipper reviewed POD and released carrier payment.",
+			payload.note or "Shipper completed POD review early and released carrier payout.",
 		)
 
 		db.add(shipment)
@@ -4290,6 +4725,10 @@ def get_shipment(
 			ensure_client_access(shipment, name)
 		elif not carrier_can_view_offer(shipment, name):
 			raise HTTPException(status_code=403, detail="Carrier does not have access to this job offer.")
+
+		advance_payout_lifecycle_if_ready(db, shipment)
+		db.commit()
+		db.refresh(shipment)
 
 		return serialize_shipment(shipment)
 
@@ -4332,10 +4771,15 @@ def accept_shipment(
 		shipment.shipper_approved_amount = None
 		shipment.payment_status = "unpaid"
 		shipment.payment_intent_id = None
+		shipment.payment_completed_at = None
+		shipment.invoice_number = None
+		shipment.invoice_generated_at = None
 		shipment.payout_status = PAYOUT_STATUS_PENDING
 		shipment.payout_transfer_id = None
 		shipment.pod_status = POD_STATUS_PENDING
 		shipment.pod_uploaded_at = None
+		shipment.pod_confirmed_at = None
+		shipment.payout_release_eligible_at = None
 		benchmark_quote = quote_for_shipment(shipment, payload.carrier_name)
 		offer_total = round(payload.offer_amount, 2)
 		if payload.quote_details is None:
@@ -4546,6 +4990,8 @@ def confirm_payment(
 		if not shipment.carrier_name:
 			raise HTTPException(status_code=409, detail="No carrier accepted this shipment yet.")
 
+		paid_at = utc_now()
+
 		if checkout_session_id:
 			require_stripe_ready()
 			session = stripe.checkout.Session.retrieve(  # type: ignore[union-attr]
@@ -4562,6 +5008,9 @@ def confirm_payment(
 				shipment.payment_intent_id = payment_intent
 			elif payment_intent is not None and getattr(payment_intent, "id", None):
 				shipment.payment_intent_id = str(payment_intent.id)
+				created_epoch = getattr(payment_intent, "created", None)
+				if isinstance(created_epoch, int):
+					paid_at = datetime.fromtimestamp(created_epoch, tz=timezone.utc)
 		else:
 			if shipment.payment_intent_id is None:
 				create_or_update_payment_intent_for_shipment(db, shipment)
@@ -4575,8 +5024,10 @@ def confirm_payment(
 		shipment.payment_status = "paid"
 		shipment.status = ShipmentStatus.active.value
 		shipment.quote_status = QUOTE_STATUS_PAID
+		shipment.payment_completed_at = paid_at
 		if shipment.shipper_approved_amount is None:
 			shipment.shipper_approved_amount = shipment_offer_amount(shipment)
+		ensure_paid_invoice(db, shipment, paid_at)
 		shipment.updated_at = utc_now()
 
 		set_shipment_status_note(shipment, ShipmentStatus.active.value, "Client accepted the quote and payment was captured.")

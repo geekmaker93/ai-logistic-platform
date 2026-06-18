@@ -75,9 +75,11 @@ export type BillingStatus = {
   subscription_status: string | null;
   subscription_plan: string | null;
   subscription_current_period_end: string | null;
+  subscription_cancel_at_period_end?: boolean;
 };
 
 export type BillingCheckoutResponse = {
+  client_secret: string | null;
   checkout_url: string;
 };
 
@@ -214,6 +216,7 @@ export type RouteAnalysis = {
 
 export type Shipment = {
   id: string;
+  load_number: string;
   client_name: string;
   carrier_name: string | null;
   assigned_driver_id: string | null;
@@ -237,10 +240,15 @@ export type Shipment = {
   status_history: Array<{ status: string; timestamp: string; note: string }>;
   estimated_arrival: string | null;
   payment_intent_id: string | null;
+  payment_completed_at: string | null;
+  invoice_number: string | null;
+  invoice_generated_at: string | null;
   payout_status: string | null;
   payout_transfer_id: string | null;
   pod_status: string;
   pod_uploaded_at: string | null;
+  pod_confirmed_at: string | null;
+  payout_release_eligible_at: string | null;
 };
 
 export type CarrierDriverSummary = {
@@ -395,8 +403,14 @@ async function request<T>(path: string, options?: RequestInit, actor?: ActorCont
   if (!response.ok) {
     try {
       const parsed = JSON.parse(responseText) as { detail?: string };
+      if (response.status === 402) {
+        throw new Error("Subscription required. Please activate your plan to continue.");
+      }
       throw new Error(parsed.detail || responseText || "Request failed.");
     } catch {
+      if (response.status === 402) {
+        throw new Error("Subscription required. Please activate your plan to continue.");
+      }
       throw new Error(responseText || "Request failed.");
     }
   }
@@ -415,9 +429,17 @@ export function signupAccount(payload: {
   vehicle_types?: string[] | null;
   email: string;
   password: string;
+  email_verification_code: string;
   role: AuthRole;
 }) {
   return request<AuthSession>("/auth/signup", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function requestSignupVerificationCode(payload: { email: string; role: AuthRole }) {
+  return request<{ detail: string; debug_code?: string | null }>("/auth/signup/request-verification-code", {
     method: "POST",
     body: JSON.stringify(payload),
   });
@@ -451,10 +473,24 @@ export function refreshSubscriptionStatus(email: string, role: AuthRole) {
   });
 }
 
+export function cancelSubscription(email: string, role: AuthRole) {
+  const query = new URLSearchParams({ email, role }).toString();
+  return request<BillingStatus>(`/billing/subscription-cancel?${query}`, {
+    method: "POST",
+  });
+}
+
+export function resumeSubscription(email: string, role: AuthRole) {
+  const query = new URLSearchParams({ email, role }).toString();
+  return request<BillingStatus>(`/billing/subscription-resume?${query}`, {
+    method: "POST",
+  });
+}
+
 export function createSubscriptionCheckoutSession(
   email: string,
   role: AuthRole,
-  payload?: { success_url?: string; cancel_url?: string }
+  payload?: { return_url?: string; success_url?: string; cancel_url?: string }
 ) {
   const query = new URLSearchParams({ email, role }).toString();
   return request<BillingCheckoutResponse>(`/billing/checkout-session?${query}`, {
@@ -818,7 +854,7 @@ export function confirmShipmentPaymentWithCheckoutSession(
 export function createShipmentPaymentCheckoutSession(
   shipmentId: string,
   actor: ActorContext,
-  payload?: { success_url?: string; cancel_url?: string }
+  payload?: { return_url?: string; success_url?: string; cancel_url?: string; embedded?: boolean }
 ) {
   return request<BillingCheckoutResponse>(`/shipments/${shipmentId}/payment-checkout`, {
     method: "POST",
@@ -849,6 +885,12 @@ export function releaseShipmentPayment(shipmentId: string, actor: ActorContext, 
   return request<Shipment>(`/shipments/${shipmentId}/release-payment`, {
     method: "POST",
     body: JSON.stringify({ note }),
+  }, actor);
+}
+
+export function confirmCarrierShipmentPod(shipmentId: string, actor: ActorContext) {
+  return request<Shipment>(`/shipments/${shipmentId}/carrier-confirm-pod`, {
+    method: "POST",
   }, actor);
 }
 

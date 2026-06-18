@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -34,6 +33,8 @@ import {
   listSubscriptionPlans,
   listShipments,
   rebookCarrierFromHistory,
+  cancelSubscription,
+  resumeSubscription,
   refreshSubscriptionStatus,
   releaseShipmentPayment,
   removePaymentMethod,
@@ -46,6 +47,7 @@ import {
   validateUsStreetAddress,
 } from "@/lib/logistics-api";
 import AddressAutocompleteInput from "@/app/components/address-autocomplete-input";
+import StripeEmbeddedCheckout from "@/app/components/stripe-embedded-checkout";
 import { AuthLiteSession, clearAuthLiteSession, getAuthLiteSession, setAuthLiteSession } from "@/lib/auth-lite";
 import { trackEvent } from "@/lib/telemetry";
 
@@ -120,6 +122,8 @@ const truckTypeOptions = [
   { value: "hotshot", label: "Hotshot" },
 ] as const;
 
+const STRIPE_PUBLISHABLE_KEY = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY?.trim() || "";
+
 function openStripeHostedFlow(url: string): boolean {
   const popupWidth = 560;
   const popupHeight = 760;
@@ -137,19 +141,12 @@ function openStripeHostedFlow(url: string): boolean {
   return true;
 }
 
-function paymentStateLabel(paymentStatus: string): string {
-  if (paymentStatus === "paid") {
-    return "Settled";
-  }
-  if (paymentStatus === "pending_client_confirmation") {
-    return "Pending client confirmation";
-  }
-  return "Not paid";
-}
-
 function podStatusLabel(podStatus: string): string {
   if (podStatus === "uploaded") {
     return "Uploaded";
+  }
+  if (podStatus === "carrier_confirmed") {
+    return "Carrier Confirmed";
   }
   if (podStatus === "reviewed") {
     return "Reviewed";
@@ -167,10 +164,6 @@ function payoutStatusLabel(payoutStatus: string | null): string {
   return "Pending";
 }
 
-function transactionKindForShipment(shipment: Shipment): "purchase" | "void" {
-  return shipment.payment_status === "paid" ? "purchase" : "void";
-}
-
   function pendingQuoteAmount(shipment: Shipment): number | null {
     if (shipment.shipper_approved_amount !== null) {
       return shipment.shipper_approved_amount;
@@ -180,16 +173,6 @@ function transactionKindForShipment(shipment: Shipment): "purchase" | "void" {
     }
     return shipment.quote_breakdown?.total_usd ?? null;
   }
-
-function voidReasonForShipment(shipment: Shipment): string {
-  if (shipment.status === "rejected") {
-    return "Offer pool exhausted or declined";
-  }
-  if (shipment.payment_status === "pending_client_confirmation") {
-    return "Awaiting payment confirmation";
-  }
-  return "Payment not captured";
-}
 
 function distanceSourceLabel(source: DispatchMatch["distance_source"]): string {
   if (source === "google_maps") {
@@ -332,7 +315,12 @@ export default function ClientPortalPage() {
   const [subscriptionStatus, setSubscriptionStatus] = useState<BillingStatus | null>(null);
   const [paymentMethodStatus, setPaymentMethodStatus] = useState<BillingPaymentMethodStatus | null>(null);
   const [subscriptionLoading, setSubscriptionLoading] = useState(false);
+  const [subscriptionActionLoading, setSubscriptionActionLoading] = useState<"cancel" | "resume" | null>(null);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [embeddedCheckout, setEmbeddedCheckout] = useState<{
+    clientSecret: string;
+    title: string;
+  } | null>(null);
   const [walletSetupLoading, setWalletSetupLoading] = useState<PaymentInstrumentType | null>(null);
   const [walletRemoveLoading, setWalletRemoveLoading] = useState(false);
   const [shipmentCheckoutLoadingId, setShipmentCheckoutLoadingId] = useState<string | null>(null);
@@ -345,8 +333,7 @@ export default function ClientPortalPage() {
   const [selectedInvoice, setSelectedInvoice] = useState<{
     invoiceId: string;
     transactionRef: string;
-    kind: "purchase" | "void";
-    detail: string;
+    paymentDate: string;
     shipment: Shipment;
   } | null>(null);
   const [profileForm, setProfileForm] = useState({
@@ -499,11 +486,61 @@ export default function ClientPortalPage() {
           // Ignore wallet fetch failures here to avoid blocking subscription access.
         });
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Failed to load subscription status.");
+      if (!(error instanceof Error && error.message === "Subscription required. Please activate your plan to continue.")) {
+        setMessage(error instanceof Error ? error.message : "Failed to load subscription status.");
+      }
     } finally {
       setSubscriptionLoading(false);
     }
   }, [session]);
+
+  const cancelClientSubscription = useCallback(async () => {
+    if (!session?.email || subscriptionActionLoading) {
+      return;
+    }
+
+    const periodEnd = subscriptionStatus?.subscription_current_period_end
+      ? new Date(subscriptionStatus.subscription_current_period_end).toLocaleDateString()
+      : "the end of your billing period";
+
+    const shouldCancel = globalThis.window.confirm(
+      `Cancel subscription? You will keep full access until ${periodEnd}, then it will not renew.`
+    );
+    if (!shouldCancel) {
+      return;
+    }
+
+    setSubscriptionActionLoading("cancel");
+    try {
+      const status = await cancelSubscription(session.email, "client");
+      setSubscriptionStatus(status);
+      const accessUntil = status.subscription_current_period_end
+        ? new Date(status.subscription_current_period_end).toLocaleDateString()
+        : "the end of your billing period";
+      setMessage(`Subscription canceled. You have full access until ${accessUntil}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to cancel subscription.");
+    } finally {
+      setSubscriptionActionLoading(null);
+    }
+  }, [session, subscriptionActionLoading, subscriptionStatus]);
+
+  const resumeClientSubscription = useCallback(async () => {
+    if (!session?.email || subscriptionActionLoading) {
+      return;
+    }
+
+    setSubscriptionActionLoading("resume");
+    try {
+      const status = await resumeSubscription(session.email, "client");
+      setSubscriptionStatus(status);
+      setMessage("Subscription resumed. It will auto-renew as normal.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to resume subscription.");
+    } finally {
+      setSubscriptionActionLoading(null);
+    }
+  }, [session, subscriptionActionLoading]);
 
   const startSubscriptionCheckout = useCallback(async () => {
     if (!session?.email || checkoutLoading) {
@@ -514,13 +551,17 @@ export default function ClientPortalPage() {
     try {
       const origin = globalThis.window.location.origin;
       const response = await createSubscriptionCheckoutSession(session.email, "client", {
-        success_url: `${origin}/client?billing=success`,
-        cancel_url: `${origin}/client?billing=cancel`,
+        return_url: `${origin}/client?billing=success`,
       });
-      const openedPopup = openStripeHostedFlow(response.checkout_url);
       setCheckoutLoading(false);
-      if (openedPopup) {
-        setMessage("Stripe checkout opened in a popup. Complete payment there, then return and click Refresh Status.");
+      if (response.client_secret) {
+        setEmbeddedCheckout({
+          clientSecret: response.client_secret,
+          title: "Subscribe for $25.00 / month",
+        });
+        setMessage("Checkout is ready below.");
+      } else {
+        setMessage("Stripe did not return an embedded checkout secret.");
       }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Failed to start checkout.");
@@ -1033,32 +1074,44 @@ export default function ClientPortalPage() {
     return liveTrackingRows.find((row) => row.shipment_id === selectedTrackingShipmentId) ?? liveTrackingRows[0];
   }, [liveTrackingRows, selectedTrackingShipmentId]);
 
-  const invoiceShipments = useMemo(
-    () => myShipments.filter((shipment) => shipment.quote_breakdown !== null),
-    [myShipments]
-  );
-
   const invoiceTransactions = useMemo(
     () =>
-      invoiceShipments.map((shipment, index) => {
-        const kind = transactionKindForShipment(shipment);
-        const referencePrefix = kind === "purchase" ? "PUR" : "VOID";
+      myShipments
+        .filter(
+          (shipment) =>
+            shipment.payment_status === "paid"
+            && shipment.quote_breakdown !== null
+            && shipment.invoice_number !== null
+            && shipment.payment_intent_id !== null
+        )
+        .sort((a, b) => {
+          const aTime = new Date(a.payment_completed_at || a.invoice_generated_at || a.updated_at).getTime();
+          const bTime = new Date(b.payment_completed_at || b.invoice_generated_at || b.updated_at).getTime();
+          return bTime - aTime;
+        })
+        .map((shipment) => {
+          const quote = shipment.quote_breakdown!;
+          const amountUsd = shipment.shipper_approved_amount ?? shipment.carrier_offer_amount ?? quote.total_usd;
+          const freightChargeUsd = quote.base_freight_usd + quote.urgency_surcharge_usd + quote.distance_surcharge_usd;
         return {
           shipment,
-          invoiceId: `INV-${new Date(shipment.created_at).getFullYear()}-${String(index + 1).padStart(4, "0")}`,
-          transactionRef: `${referencePrefix}-${shipment.id.slice(0, 8).toUpperCase()}`,
-          kind,
-          detail: kind === "purchase" ? "Payment captured" : voidReasonForShipment(shipment),
+          invoiceId: shipment.invoice_number!,
+          transactionRef: shipment.payment_intent_id!,
+          paymentDate: shipment.payment_completed_at || shipment.invoice_generated_at || shipment.updated_at,
+          amountUsd,
+          freightChargeUsd,
+          platformFeeUsd: quote.service_fee_usd,
+          detail: "Payment captured via Stripe",
         };
       }),
-    [invoiceShipments]
+    [myShipments]
   );
 
   const ownTransactions = useMemo(
     () =>
       invoiceTransactions.map((item) => ({
         ...item,
-        amountUsd: item.shipment.shipper_approved_amount ?? item.shipment.carrier_offer_amount ?? item.shipment.quote_breakdown?.total_usd ?? 0,
+        kind: "purchase" as const,
       })),
     [invoiceTransactions]
   );
@@ -1066,45 +1119,42 @@ export default function ClientPortalPage() {
   function buildInvoiceDocument(params: {
     invoiceId: string;
     transactionRef: string;
-    kind: "purchase" | "void";
-    detail: string;
+    paymentDate: string;
     shipment: Shipment;
   }): string {
-    const { invoiceId, transactionRef, kind, detail, shipment } = params;
+    const { invoiceId, transactionRef, paymentDate, shipment } = params;
     const quote = shipment.quote_breakdown;
     if (!quote) {
       return "No invoice data available.";
     }
 
+    const freightChargeUsd = quote.base_freight_usd + quote.urgency_surcharge_usd + quote.distance_surcharge_usd;
+    const platformFeeUsd = quote.service_fee_usd;
+    const totalPaidUsd = shipment.shipper_approved_amount ?? shipment.carrier_offer_amount ?? quote.total_usd;
+
     return [
-      `Invoice ID: ${invoiceId}`,
-      `Transaction Ref: ${transactionRef}`,
-      `Transaction Type: ${kind === "purchase" ? "Purchase" : "Void"}`,
-      `Payment State: ${paymentStateLabel(shipment.payment_status)}`,
-      `Transaction Detail: ${detail}`,
-      `Issued Date: ${new Date(shipment.created_at).toLocaleDateString()}`,
+      `Invoice #: ${invoiceId}`,
+      `Load #: ${shipment.load_number}`,
+      "Status: PAID",
       "",
       `Shipper: ${shipment.client_name}`,
       `Carrier: ${shipment.carrier_name || "Pending assignment"}`,
-      `Route: ${shipment.origin} to ${shipment.destination}`,
-      `Cargo: ${shipment.cargo_type}`,
-      `Weight: ${toLbFromKg(shipment.weight_kg).toLocaleString()} lb (${shipment.weight_kg.toLocaleString()} kg)`,
+      `Route: ${shipment.origin} -> ${shipment.destination}`,
       "",
-      `Base Freight: $${quote.base_freight_usd.toFixed(2)}`,
-      `Urgency Surcharge: $${quote.urgency_surcharge_usd.toFixed(2)}`,
-      `Distance Surcharge: $${quote.distance_surcharge_usd.toFixed(2)}`,
-      `Service Fee: $${quote.service_fee_usd.toFixed(2)}`,
-      `Total: $${quote.total_usd.toFixed(2)}`,
-      `ETA: ${quote.estimated_delivery_time}`,
-      ...(quote.notes ? [`Notes: ${quote.notes}`] : []),
+      "Description                 Amount",
+      `Freight Charge              $${freightChargeUsd.toFixed(2)}`,
+      `Platform Fee                $${platformFeeUsd.toFixed(2)}`,
+      `Total Paid                  $${totalPaidUsd.toFixed(2)}`,
+      "",
+      `Payment Date: ${new Date(paymentDate).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}`,
+      `Transaction ID: ${transactionRef}`,
     ].join("\n");
   }
 
   function onDownloadInvoice(params: {
     invoiceId: string;
     transactionRef: string;
-    kind: "purchase" | "void";
-    detail: string;
+    paymentDate: string;
     shipment: Shipment;
   }) {
     const safeInvoiceId = params.invoiceId.replace(/[^a-zA-Z0-9-_]/g, "_");
@@ -1115,8 +1165,7 @@ export default function ClientPortalPage() {
   function onViewInvoice(params: {
     invoiceId: string;
     transactionRef: string;
-    kind: "purchase" | "void";
-    detail: string;
+    paymentDate: string;
     shipment: Shipment;
   }) {
     setSelectedInvoice(params);
@@ -1198,18 +1247,38 @@ export default function ClientPortalPage() {
     setShipmentCheckoutLoadingId(shipmentId);
     try {
       const origin = globalThis.window.location.origin;
+      const useEmbeddedCheckout = Boolean(STRIPE_PUBLISHABLE_KEY);
       const response = await createShipmentPaymentCheckoutSession(
         shipmentId,
         { role: "client", displayName: session.displayName },
-        {
-          success_url: `${origin}/client?shipmentPayment=success&shipmentId=${encodeURIComponent(shipmentId)}&checkoutSessionId={CHECKOUT_SESSION_ID}`,
-          cancel_url: `${origin}/client?shipmentPayment=cancel&shipmentId=${encodeURIComponent(shipmentId)}`,
-        }
+        useEmbeddedCheckout
+          ? {
+              return_url: `${origin}/client?shipmentPayment=success&shipmentId=${encodeURIComponent(shipmentId)}&checkoutSessionId={CHECKOUT_SESSION_ID}`,
+              embedded: true,
+            }
+          : {
+              success_url: `${origin}/client?shipmentPayment=success&shipmentId=${encodeURIComponent(shipmentId)}&checkoutSessionId={CHECKOUT_SESSION_ID}`,
+              cancel_url: `${origin}/client?shipmentPayment=cancel&shipmentId=${encodeURIComponent(shipmentId)}`,
+              embedded: false,
+            }
       );
-      const openedPopup = openStripeHostedFlow(response.checkout_url);
       setShipmentCheckoutLoadingId(null);
-      if (openedPopup) {
-        setMessage("Payment checkout opened in a popup. Complete payment there, then refresh shipments.");
+      if (response.client_secret) {
+        const shipment = shipments.find((item) => item.id === shipmentId);
+        setEmbeddedCheckout({
+          clientSecret: response.client_secret,
+          title: shipment ? `Pay ${shipment.origin} to ${shipment.destination}` : "Pay shipment invoice",
+        });
+        setMessage("Checkout is ready below.");
+      } else if (response.checkout_url) {
+        const openedPopup = openStripeHostedFlow(response.checkout_url);
+        setMessage(
+          openedPopup
+            ? "Stripe checkout opened in a popup. Complete payment there, then return to this page."
+            : "Redirecting to Stripe checkout..."
+        );
+      } else {
+        setMessage("Stripe did not return a checkout session payload.");
       }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Failed to open payment checkout.");
@@ -1245,7 +1314,7 @@ export default function ClientPortalPage() {
       await releaseShipmentPayment(
         shipmentId,
         { role: "client", displayName: session.displayName },
-        "Shipper reviewed POD and released carrier payout."
+        "Shipper completed POD review and released carrier payout early."
       );
       trackEvent("shipment.payment_released", { role: "client", shipmentId });
       setMessage("Carrier payment released.");
@@ -1481,7 +1550,7 @@ export default function ClientPortalPage() {
             <div>
               <h1 className="text-3xl font-semibold md:text-4xl">Shipment Dispatch and Tracking</h1>
               <p className="mt-3 max-w-3xl text-indigo-100">
-                Create shipment requests, send offers to matching carriers, and confirm payment before activation.
+                Access the FreightAxis network to create shipment requests, receive competitive carrier offers, and securely confirm transportation services through the platform.
               </p>
             </div>
             <div className="flex gap-2">
@@ -1630,7 +1699,7 @@ export default function ClientPortalPage() {
                 disabled={checkoutLoading || subscriptionLoading}
                 className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-500 disabled:opacity-60"
               >
-                {checkoutLoading ? "Redirecting..." : "Subscribe for $25.00"}
+                {checkoutLoading ? "Opening secure checkout..." : "Subscribe for $25.00"}
               </button>
               <button
                 type="button"
@@ -1644,17 +1713,36 @@ export default function ClientPortalPage() {
           </section>
         )}
 
+        {embeddedCheckout && (
+          <StripeEmbeddedCheckout
+            clientSecret={embeddedCheckout.clientSecret}
+            publishableKey={STRIPE_PUBLISHABLE_KEY}
+            title={embeddedCheckout.title}
+            onClose={() => setEmbeddedCheckout(null)}
+          />
+        )}
+
         {activeTab === "subscription" && (
           <section className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
             <h2 className="text-xl font-semibold">Subscription</h2>
             <p className="mt-1 text-sm text-slate-600">Manage your shipper plan access.</p>
-            <div className="mt-4 rounded-lg border border-slate-200 p-4 text-sm">
+            <div className="mt-4 rounded-lg border border-slate-200 p-4 text-sm space-y-1">
               <p><span className="font-semibold">Plan:</span> {shipperPlan?.name || "Shipper"}</p>
               <p><span className="font-semibold">Price:</span> ${shipperPlan?.price_usd.toFixed(2) || "25.00"}/month</p>
               <p><span className="font-semibold">Status:</span> {subscriptionStatus?.subscription_status || "inactive"}</p>
               <p>
-                <span className="font-semibold">Access:</span> {isSubscriptionActive ? "Active" : "Locked until subscribed"}
+                <span className="font-semibold">
+                  {subscriptionStatus?.subscription_cancel_at_period_end ? "Access until:" : "Renews:"}
+                </span>{" "}
+                {subscriptionStatus?.subscription_current_period_end
+                  ? new Date(subscriptionStatus.subscription_current_period_end).toLocaleDateString()
+                  : "n/a"}
               </p>
+              {subscriptionStatus?.subscription_cancel_at_period_end && (
+                <p className="text-amber-700 font-medium">
+                  Cancellation scheduled — full access remains until the date above.
+                </p>
+              )}
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
               <button
@@ -1665,6 +1753,26 @@ export default function ClientPortalPage() {
               >
                 {subscriptionLoading ? "Checking..." : "Refresh Status"}
               </button>
+              {isSubscriptionActive && !subscriptionStatus?.subscription_cancel_at_period_end && (
+                <button
+                  type="button"
+                  onClick={() => void cancelClientSubscription()}
+                  disabled={subscriptionActionLoading !== null}
+                  className="rounded-lg border border-rose-300 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-60"
+                >
+                  {subscriptionActionLoading === "cancel" ? "Canceling..." : "Cancel Subscription"}
+                </button>
+              )}
+              {isSubscriptionActive && subscriptionStatus?.subscription_cancel_at_period_end && (
+                <button
+                  type="button"
+                  onClick={() => void resumeClientSubscription()}
+                  disabled={subscriptionActionLoading !== null}
+                  className="rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-100 disabled:opacity-60"
+                >
+                  {subscriptionActionLoading === "resume" ? "Resuming..." : "Resume Subscription"}
+                </button>
+              )}
             </div>
           </section>
         )}
@@ -1691,15 +1799,6 @@ export default function ClientPortalPage() {
                   <p className="text-xs uppercase tracking-wider text-slate-500">Delivered</p>
                   <p className="mt-2 text-2xl font-semibold text-indigo-600">{dashboardStats.delivered}</p>
                 </div>
-              </div>
-            )}
-
-            {activeTab === "dashboard" && (
-              <div className="rounded-2xl border border-indigo-200 bg-indigo-50 p-4 text-xs text-indigo-900">
-                <p className="font-semibold uppercase tracking-wide">Payment Release Flow</p>
-                <p className="mt-1">
-                  Accept quote, then pay shipment, then driver delivers, then driver uploads POD, then you review POD, then click Release Payment, then carrier gets paid.
-                </p>
               </div>
             )}
 
@@ -1805,23 +1904,34 @@ export default function ClientPortalPage() {
                         disabled={shipmentCheckoutLoadingId === shipment.id}
                         className="mt-3 rounded-lg bg-emerald-700 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-600"
                       >
-                        {shipmentCheckoutLoadingId === shipment.id ? "Opening Checkout..." : "Pay Now"}
+                        {shipmentCheckoutLoadingId === shipment.id ? "Opening secure checkout..." : "Pay Now"}
                       </button>
                     )}
 
-                    {shipment.payment_status === "paid" && shipment.status === "delivered" && shipment.pod_status === "uploaded" && shipment.payout_status !== "released" && (
+                    {shipment.payment_status === "paid" && shipment.status === "delivered" && shipment.pod_status === "carrier_confirmed" && shipment.payout_status !== "released" && (
                       <button
                         type="button"
                         onClick={() => void onReleasePayment(shipment.id)}
                         disabled={releasePaymentLoadingId === shipment.id}
                         className="mt-3 rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
                       >
-                        {releasePaymentLoadingId === shipment.id ? "Releasing..." : "Release Payment"}
+                        {releasePaymentLoadingId === shipment.id ? "Releasing..." : "Complete Review and Release Now"}
                       </button>
                     )}
 
                     {shipment.payment_status === "paid" && shipment.status === "delivered" && shipment.pod_status === "pending" && (
                       <p className="mt-3 text-xs font-semibold text-amber-700">Waiting for driver POD upload before payment release.</p>
+                    )}
+
+                    {shipment.payment_status === "paid" && shipment.status === "delivered" && shipment.pod_status === "uploaded" && shipment.payout_status !== "released" && (
+                      <p className="mt-3 text-xs font-semibold text-amber-700">Waiting for carrier POD confirmation before shipper review.</p>
+                    )}
+
+                    {shipment.payment_status === "paid" && shipment.status === "delivered" && shipment.pod_status === "carrier_confirmed" && shipment.payout_status !== "released" && (
+                      <p className="mt-3 text-xs font-semibold text-indigo-700">
+                        Review window active.
+                        {shipment.payout_release_eligible_at ? ` Auto-release at ${new Date(shipment.payout_release_eligible_at).toLocaleString()}.` : ""}
+                      </p>
                     )}
 
                     <div className="mt-3 grid gap-1 text-xs text-slate-500 sm:grid-cols-2">
@@ -2633,14 +2743,12 @@ export default function ClientPortalPage() {
               <div className="mt-5 space-y-3">
                 {invoiceTransactions.length === 0 && (
                   <p className="rounded-lg border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">
-                    No invoice documents yet. Create shipments and wait for quotes to see invoice summaries.
+                    No paid invoices yet. Completed Stripe payments will appear here automatically.
                   </p>
                 )}
 
-                {invoiceTransactions.map(({ shipment, invoiceId, transactionRef, kind, detail }) => {
+                {invoiceTransactions.map(({ shipment, invoiceId, transactionRef, paymentDate, amountUsd, freightChargeUsd, platformFeeUsd }) => {
                   const quote = shipment.quote_breakdown!;
-                  const amountUsd = shipment.shipper_approved_amount ?? shipment.carrier_offer_amount ?? quote.total_usd;
-                  const isPaid = shipment.payment_status === "paid";
 
                   return (
                     <div key={shipment.id} className="rounded-xl border border-slate-200 bg-white p-5">
@@ -2648,11 +2756,9 @@ export default function ClientPortalPage() {
                         <div>
                           <p className="text-xs font-semibold uppercase tracking-widest text-slate-400">Invoice</p>
                           <p className="mt-1 text-lg font-bold text-slate-900">{invoiceId}</p>
-                          <p className="mt-0.5 text-xs text-slate-500">Issued {new Date(shipment.created_at).toLocaleDateString()}</p>
+                          <p className="mt-0.5 text-xs text-slate-500">Payment Date {new Date(paymentDate).toLocaleDateString()}</p>
                         </div>
-                        <span className={`rounded-full px-3 py-1 text-xs font-semibold ${isPaid ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>
-                          {isPaid ? "PAID" : "UNPAID"}
-                        </span>
+                        <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">PAID</span>
                       </div>
 
                       <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
@@ -2665,21 +2771,15 @@ export default function ClientPortalPage() {
                           <p className="mt-1 font-medium text-slate-800">{shipment.carrier_name || "Pending assignment"}</p>
                         </div>
                         <div>
+                          <p className="text-xs font-semibold uppercase text-slate-400">Load</p>
+                          <p className="mt-1 text-slate-700">{shipment.load_number}</p>
+                        </div>
+                        <div>
                           <p className="text-xs font-semibold uppercase text-slate-400">Route</p>
                           <p className="mt-1 text-slate-700">{shipment.origin} to {shipment.destination}</p>
                         </div>
                         <div>
-                          <p className="text-xs font-semibold uppercase text-slate-400">Cargo</p>
-                          <p className="mt-1 text-slate-700">{shipment.cargo_type} • {toLbFromKg(shipment.weight_kg).toLocaleString()} lb</p>
-                        </div>
-                        <div>
-                          <p className="text-xs font-semibold uppercase text-slate-400">Transaction Type</p>
-                          <p className={`mt-1 font-semibold ${kind === "purchase" ? "text-emerald-700" : "text-rose-700"}`}>
-                            {kind === "purchase" ? "Purchase" : "Void"}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-xs font-semibold uppercase text-slate-400">Transaction Ref</p>
+                          <p className="text-xs font-semibold uppercase text-slate-400">Transaction ID</p>
                           <p className="mt-1 text-slate-700">{transactionRef}</p>
                         </div>
                       </div>
@@ -2687,7 +2787,7 @@ export default function ClientPortalPage() {
                       <div className="mt-3 flex justify-end">
                         <button
                           type="button"
-                          onClick={() => onViewInvoice({ invoiceId, transactionRef, kind, detail, shipment })}
+                          onClick={() => onViewInvoice({ invoiceId, transactionRef, paymentDate, shipment })}
                           className="rounded-md border border-indigo-300 px-3 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-50"
                         >
                           View Invoice
@@ -2696,21 +2796,10 @@ export default function ClientPortalPage() {
 
                       <div className="mt-4 rounded-lg bg-slate-50 p-3">
                         <div className="space-y-1 text-sm">
-                          <div className="flex justify-between text-slate-600"><span>Base freight</span><span>${quote.base_freight_usd.toFixed(2)}</span></div>
-                          <div className="flex justify-between text-slate-600"><span>Urgency surcharge</span><span>${quote.urgency_surcharge_usd.toFixed(2)}</span></div>
-                          <div className="flex justify-between text-slate-600"><span>Distance surcharge</span><span>${quote.distance_surcharge_usd.toFixed(2)}</span></div>
-                          <div className="flex justify-between text-slate-600"><span>Service fee</span><span>${quote.service_fee_usd.toFixed(2)}</span></div>
-                          <div className="mt-2 flex justify-between border-t border-slate-200 pt-2 font-bold text-slate-900"><span>Total</span><span>${amountUsd.toFixed(2)}</span></div>
+                          <div className="flex justify-between text-slate-600"><span>Freight charge</span><span>${freightChargeUsd.toFixed(2)}</span></div>
+                          <div className="flex justify-between text-slate-600"><span>Platform fee</span><span>${platformFeeUsd.toFixed(2)}</span></div>
+                          <div className="mt-2 flex justify-between border-t border-slate-200 pt-2 font-bold text-slate-900"><span>Total paid</span><span>${amountUsd.toFixed(2)}</span></div>
                         </div>
-                      </div>
-
-                      <div className="mt-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
-                        <p>
-                          <span className="font-semibold text-slate-700">Payment State:</span> {paymentStateLabel(shipment.payment_status)}
-                        </p>
-                        <p>
-                          <span className="font-semibold text-slate-700">Transaction Detail:</span> {detail}
-                        </p>
                       </div>
 
                       {quote.notes && <p className="mt-2 text-xs text-slate-400">{quote.notes}</p>}
@@ -2727,7 +2816,7 @@ export default function ClientPortalPage() {
                     <div>
                       <p className="text-xs font-semibold uppercase tracking-widest text-slate-400">Invoice Preview</p>
                       <h3 className="mt-1 text-xl font-bold text-slate-900">{selectedInvoice.invoiceId}</h3>
-                      <p className="mt-1 text-xs text-slate-500">Ref {selectedInvoice.transactionRef}</p>
+                      <p className="mt-1 text-xs text-slate-500">Transaction ID {selectedInvoice.transactionRef}</p>
                     </div>
                     <button
                       type="button"
@@ -2748,14 +2837,12 @@ export default function ClientPortalPage() {
                       <p className="mt-1 font-medium text-slate-800">{selectedInvoice.shipment.carrier_name || "Pending assignment"}</p>
                     </div>
                     <div>
-                      <p className="text-xs font-semibold uppercase text-slate-400">Route</p>
-                      <p className="mt-1 text-slate-700">{selectedInvoice.shipment.origin} to {selectedInvoice.shipment.destination}</p>
+                      <p className="text-xs font-semibold uppercase text-slate-400">Load</p>
+                      <p className="mt-1 text-slate-700">{selectedInvoice.shipment.load_number}</p>
                     </div>
                     <div>
-                      <p className="text-xs font-semibold uppercase text-slate-400">Transaction</p>
-                      <p className={`mt-1 font-semibold ${selectedInvoice.kind === "purchase" ? "text-emerald-700" : "text-rose-700"}`}>
-                        {selectedInvoice.kind === "purchase" ? "Purchase" : "Void"}
-                      </p>
+                      <p className="text-xs font-semibold uppercase text-slate-400">Route</p>
+                      <p className="mt-1 text-slate-700">{selectedInvoice.shipment.origin} to {selectedInvoice.shipment.destination}</p>
                     </div>
                   </div>
 
@@ -2772,8 +2859,9 @@ export default function ClientPortalPage() {
                   )}
 
                   <div className="mt-4 rounded-lg border border-slate-200 px-3 py-2 text-xs text-slate-600">
-                    <p><span className="font-semibold text-slate-700">Payment State:</span> {paymentStateLabel(selectedInvoice.shipment.payment_status)}</p>
-                    <p><span className="font-semibold text-slate-700">Transaction Detail:</span> {selectedInvoice.detail}</p>
+                    <p><span className="font-semibold text-slate-700">Status:</span> PAID</p>
+                    <p><span className="font-semibold text-slate-700">Payment Date:</span> {new Date(selectedInvoice.paymentDate).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}</p>
+                    <p><span className="font-semibold text-slate-700">Transaction ID:</span> {selectedInvoice.transactionRef}</p>
                   </div>
 
                   <div className="mt-5 flex justify-end gap-2">
@@ -2783,8 +2871,7 @@ export default function ClientPortalPage() {
                         onDownloadInvoice({
                           invoiceId: selectedInvoice.invoiceId,
                           transactionRef: selectedInvoice.transactionRef,
-                          kind: selectedInvoice.kind,
-                          detail: selectedInvoice.detail,
+                          paymentDate: selectedInvoice.paymentDate,
                           shipment: selectedInvoice.shipment,
                         })
                       }
