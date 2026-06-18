@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { jsPDF } from "jspdf";
@@ -72,6 +73,119 @@ function ProfileIcon(props: Readonly<{ className?: string }>) {
       <circle cx="12" cy="8" r="3.5" />
       <path d="M5 19c0-3.1 3.1-5 7-5s7 1.9 7 5" />
     </svg>
+  );
+}
+
+function formatUsdCompact(amount: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    notation: amount >= 10000 ? "compact" : "standard",
+    maximumFractionDigits: amount >= 10000 ? 1 : 0,
+  }).format(amount);
+}
+
+function shipmentStatusBadgeClass(status: Shipment["status"]): string {
+  if (status === "delivered") {
+    return "border border-emerald-200 bg-emerald-50 text-emerald-700";
+  }
+  if (status === "active" || status === "in_transit") {
+    return "border border-sky-200 bg-sky-50 text-sky-700";
+  }
+  if (status === "awaiting_payment") {
+    return "border border-amber-200 bg-amber-50 text-amber-700";
+  }
+  return "border border-indigo-200 bg-indigo-50 text-indigo-700";
+}
+
+function buildActivityPath(values: number[]): string {
+  const width = 320;
+  const height = 120;
+  const maxValue = Math.max(...values, 1);
+
+  return values.map((value, index) => {
+    const x = values.length === 1 ? width / 2 : (index / (values.length - 1)) * width;
+    const y = height - (value / maxValue) * 88 - 12;
+    return `${index === 0 ? "M" : "L"}${x.toFixed(2)},${y.toFixed(2)}`;
+  }).join(" ");
+}
+
+function DashboardStatCard(props: Readonly<{
+  label: string;
+  value: string | number;
+  detail: string;
+  accentClass: string;
+  progressClass: string;
+  progress: number;
+}>) {
+  const { label, value, detail, accentClass, progressClass, progress } = props;
+
+  return (
+    <div className="shipper-premium-card shipper-card-hover rounded-[28px] p-5">
+      <div className="relative z-10">
+        <div className={`inline-flex rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.24em] ${accentClass}`}>
+          {label}
+        </div>
+        <p className="mt-4 text-3xl font-semibold tracking-tight text-slate-950">{value}</p>
+        <p className="mt-2 text-sm leading-6 text-slate-600">{detail}</p>
+        <div className="mt-5 h-2 overflow-hidden rounded-full bg-slate-200/80">
+          <div className={`h-full rounded-full ${progressClass}`} style={{ width: `${Math.max(10, Math.min(100, progress))}%` }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ShipperActivityChart(props: Readonly<{
+  labels: string[];
+  values: number[];
+}>) {
+  const { labels, values } = props;
+  const path = buildActivityPath(values);
+
+  return (
+    <div className="relative overflow-hidden rounded-[28px] border border-white/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(238,242,255,0.82))] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.6)]">
+      <div className="shipper-grid-glow absolute inset-0 opacity-60" />
+      <div className="relative z-10">
+        <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-500">Shipping velocity</p>
+        <div className="mt-4 rounded-[24px] bg-slate-950 px-4 py-4 text-white shadow-[0_18px_45px_rgba(15,23,42,0.28)]">
+          <div className="flex items-end justify-between gap-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-200/80">Recent activity</p>
+              <p className="mt-2 text-3xl font-semibold tracking-tight">{Math.max(...values, 0)}</p>
+            </div>
+            <p className="max-w-[180px] text-right text-xs leading-5 text-slate-300">A compact view of recent shipment movement and completion momentum.</p>
+          </div>
+          <svg viewBox="0 0 320 120" className="mt-4 h-32 w-full" role="img" aria-label="Recent shipment activity chart">
+            <defs>
+              <linearGradient id="shipperActivityStroke" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%" stopColor="#67e8f9" />
+                <stop offset="100%" stopColor="#818cf8" />
+              </linearGradient>
+              <linearGradient id="shipperActivityFill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="rgba(103, 232, 249, 0.26)" />
+                <stop offset="100%" stopColor="rgba(15, 23, 42, 0)" />
+              </linearGradient>
+            </defs>
+            <path d={path} fill="none" stroke="url(#shipperActivityStroke)" strokeWidth="4" strokeLinecap="round" />
+            {values.map((value, index) => {
+              const x = values.length === 1 ? 160 : (index / (values.length - 1)) * 320;
+              const y = 120 - (value / Math.max(...values, 1)) * 88 - 12;
+              return (
+                <g key={`activity-point-${index}-${labels[index] ?? "label"}-${value}`}>
+                  <circle cx={x} cy={y} r="5" fill="#0f172a" stroke="#67e8f9" strokeWidth="3" />
+                </g>
+              );
+            })}
+          </svg>
+          <div className="mt-2 grid grid-cols-6 gap-2 text-[11px] uppercase tracking-[0.18em] text-slate-400">
+            {labels.map((label, index) => (
+              <span key={`activity-label-${index}-${label}`} className="truncate text-center">{label}</span>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -310,7 +424,7 @@ export default function ClientPortalPage() {
   const [message, setMessage] = useState("");
   const [profile, setProfile] = useState<AuthProfile | null>(null);
   const [profileSaving, setProfileSaving] = useState(false);
-  const [activeTab, setActiveTab] = useState<"dashboard" | "tracking" | "create" | "carrier_history" | "transactions" | "documents" | "profile" | "subscription">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "metrics" | "tracking" | "create" | "carrier_history" | "transactions" | "documents" | "profile" | "subscription">("dashboard");
   const [subscriptionPlans, setSubscriptionPlans] = useState<BillingPlan[]>([]);
   const [subscriptionStatus, setSubscriptionStatus] = useState<BillingStatus | null>(null);
   const [paymentMethodStatus, setPaymentMethodStatus] = useState<BillingPaymentMethodStatus | null>(null);
@@ -1046,6 +1160,133 @@ export default function ClientPortalPage() {
     };
   }, [myShipments]);
 
+  const dashboardRevenue = useMemo(
+    () => myShipments.reduce((sum, shipment) => sum + (pendingQuoteAmount(shipment) ?? 0), 0),
+    [myShipments]
+  );
+
+  const deliveredRevenue = useMemo(
+    () => myShipments
+      .filter((shipment) => shipment.status === "delivered")
+      .reduce((sum, shipment) => sum + (pendingQuoteAmount(shipment) ?? 0), 0),
+    [myShipments]
+  );
+
+  const dashboardMix = useMemo(() => {
+    const total = Math.max(myShipments.length, 1);
+    return [
+      {
+        label: "Awaiting payment",
+        value: dashboardStats.awaitingPayment,
+        percent: Math.round((dashboardStats.awaitingPayment / total) * 100),
+        barClass: "bg-gradient-to-r from-amber-400 to-orange-500",
+      },
+      {
+        label: "In motion",
+        value: dashboardStats.active,
+        percent: Math.round((dashboardStats.active / total) * 100),
+        barClass: "bg-gradient-to-r from-cyan-400 to-sky-500",
+      },
+      {
+        label: "Delivered",
+        value: dashboardStats.delivered,
+        percent: Math.round((dashboardStats.delivered / total) * 100),
+        barClass: "bg-gradient-to-r from-emerald-400 to-teal-500",
+      },
+    ];
+  }, [dashboardStats, myShipments.length]);
+
+  const shipmentActivityChart = useMemo(() => {
+    const recentShipments = [...myShipments]
+      .sort((a, b) => new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime())
+      .slice(-6);
+
+    if (recentShipments.length === 0) {
+      return {
+        labels: ["Jan", "Feb", "Mar", "Apr", "May", "Jun"],
+        values: [1, 2, 1, 3, 2, 4],
+      };
+    }
+
+    return {
+      labels: recentShipments.map((shipment) => new Date(shipment.updated_at).toLocaleDateString("en-US", { month: "short" })),
+      values: recentShipments.map((shipment) => {
+        if (shipment.status === "delivered") {
+          return 5;
+        }
+        if (shipment.status === "active" || shipment.status === "in_transit") {
+          return 4;
+        }
+        if (shipment.status === "awaiting_payment") {
+          return 3;
+        }
+        if (shipment.status === "accepted") {
+          return 2;
+        }
+        return 1;
+      }),
+    };
+  }, [myShipments]);
+
+  const profileCompletion = useMemo(() => {
+    const checks = [
+      profileForm.full_name,
+      profileForm.company_name,
+      profileForm.phone,
+      profileForm.street,
+      profileForm.city,
+      profileForm.state,
+      profileForm.postal_code,
+      profileForm.bio,
+    ];
+    const complete = checks.filter((value) => value.trim().length > 0).length;
+    return Math.round((complete / checks.length) * 100);
+  }, [profileForm]);
+
+  const shipperAnalytics = useMemo(() => {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const thisMonthShipments = myShipments.filter((s) => new Date(s.created_at) >= monthStart);
+    
+    // Total spend this month (sum of all quoted amounts)
+    const totalSpendThisMonth = thisMonthShipments.reduce((sum, s) => sum + (pendingQuoteAmount(s) ?? 0), 0);
+    
+    // Loads completed this month
+    const loadsCompletedThisMonth = thisMonthShipments.filter((s) => s.status === "delivered").length;
+    
+    // Average transit time
+    const completedWithTiming = thisMonthShipments
+      .filter((s) => s.status === "delivered" && s.estimated_arrival && s.created_at)
+      .map((s) => {
+        const createdTime = new Date(s.created_at).getTime();
+        const arrivalTime = new Date(s.estimated_arrival!).getTime();
+        return (arrivalTime - createdTime) / (1000 * 60 * 60); // hours
+      });
+    
+    const avgTransitHours = completedWithTiming.length > 0
+      ? completedWithTiming.reduce((a, b) => a + b, 0) / completedWithTiming.length
+      : 0;
+    
+    // Average cost per mile (estimate: total spend / estimated total miles)
+    const completedWithMiles = thisMonthShipments.filter((s) => s.status === "delivered");
+    const estimatedTotalMiles = completedWithMiles.reduce((sum, s) => {
+      // Rough estimate: assume 0.5 miles per lb for cargo weight
+      const estimatedMiles = Math.max((s.weight_kg * 2.2) * 0.5, 100);
+      return sum + estimatedMiles;
+    }, 0);
+    
+    const avgCostPerMile = estimatedTotalMiles > 0
+      ? (totalSpendThisMonth / estimatedTotalMiles)
+      : 0;
+    
+    return {
+      totalSpendThisMonth,
+      loadsCompletedThisMonth,
+      avgTransitHours,
+      avgCostPerMile,
+    };
+  }, [myShipments]);
+
   const liveTrackingByShipmentId = useMemo(() => {
     const map: Record<string, CarrierLiveTrackingItem> = {};
     for (const row of liveTrackingRows) {
@@ -1543,88 +1784,125 @@ export default function ClientPortalPage() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-100 p-6 text-slate-900 md:p-10">
+    <main className="shipper-portal-shell min-h-screen px-4 py-6 text-slate-900 md:px-8 md:py-10">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-8">
-        <header className="rounded-3xl bg-indigo-900 p-8 text-white shadow-lg">
-          <div className="flex items-center justify-between gap-3">
+        <header className="shipper-hero-card shipper-fade-up rounded-[36px] bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.18),_transparent_24%),linear-gradient(135deg,#0b1220_0%,#1a1745_46%,#0b5f59_100%)] p-8 text-white md:p-10">
+          <div className="relative z-10 grid gap-8 xl:grid-cols-[1.35fr_0.85fr] xl:items-start">
             <div>
-              <h1 className="text-3xl font-semibold md:text-4xl">Shipment Dispatch and Tracking</h1>
-              <p className="mt-3 max-w-3xl text-indigo-100">
-                Access the FreightAxis network to create shipment requests, receive competitive carrier offers, and securely confirm transportation services through the platform.
-              </p>
-            </div>
-            <div className="flex gap-2">
-              <div className="relative" ref={accountMenuRef}>
-                <button
-                  type="button"
-                  onClick={() => setAccountMenuOpen((prev) => !prev)}
-                  aria-label="Open my account menu"
-                  aria-expanded={accountMenuOpen}
-                  className="flex items-center gap-2 rounded-lg border border-indigo-200/50 px-3 py-2 text-sm font-semibold hover:bg-white/20"
-                >
-                  <span>My Account</span>
-                  <ProfileIcon className="h-5 w-5" />
-                </button>
-                {accountMenuOpen && (
-                  <div className="absolute right-0 top-12 z-20 w-52 rounded-xl border border-indigo-200 bg-white p-2 text-slate-900 shadow-xl">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActiveTab("profile");
-                        setAccountMenuOpen(false);
-                      }}
-                      className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-slate-100"
-                    >
-                      Profile
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActiveTab("subscription");
-                        setAccountMenuOpen(false);
-                      }}
-                      className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-slate-100"
-                    >
-                      Subscription
-                    </button>
-                  </div>
-                )}
+              <div className="inline-flex rounded-full border border-white/15 bg-white/10 px-4 py-1.5 text-[11px] font-semibold uppercase tracking-[0.28em] text-cyan-100">
+                Shipper workspace
               </div>
-              <button
-                onClick={signOut}
-                className="rounded-lg border border-indigo-200/50 px-4 py-2 text-sm font-semibold hover:bg-white/20"
-              >
-                Sign Out
-              </button>
-              <a className="rounded-lg bg-white/15 px-4 py-2 text-sm font-semibold hover:bg-white/25" href="/">
-                Home
-              </a>
+              <h1 className="mt-5 max-w-4xl text-4xl font-semibold tracking-[-0.03em] text-white md:text-5xl">
+                Dispatch, pay, and track freight from one polished command center.
+              </h1>
+              <p className="mt-4 max-w-3xl text-base leading-7 text-slate-200 md:text-lg">
+                Access the FreightAxis network to create shipment requests, compare carrier offers, release payments, and monitor live movement with a dashboard that feels client-ready instead of back-office.
+              </p>
+              <div className="mt-6 flex flex-wrap gap-3 text-sm text-white/90">
+                <div className="rounded-full border border-white/12 bg-white/10 px-4 py-2">{profile?.company_name || session?.displayName || "FreightAxis shipper account"}</div>
+                <div className="rounded-full border border-white/12 bg-white/10 px-4 py-2">{dashboardStats.total} total shipments</div>
+                <div className="rounded-full border border-white/12 bg-white/10 px-4 py-2">{formatUsdCompact(dashboardRevenue)} quoted volume</div>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-4 xl:items-end">
+              <div className="flex flex-wrap justify-end gap-2">
+                <div className="relative" ref={accountMenuRef}>
+                  <button
+                    type="button"
+                    onClick={() => setAccountMenuOpen((prev) => !prev)}
+                    aria-label="Open my account menu"
+                    aria-expanded={accountMenuOpen}
+                    className="flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/16"
+                  >
+                    <span>My Account</span>
+                    <ProfileIcon className="h-5 w-5" />
+                  </button>
+                  {accountMenuOpen && (
+                    <div className="absolute right-0 top-14 z-20 w-56 rounded-2xl border border-indigo-200/60 bg-white p-2 text-slate-900 shadow-2xl shadow-slate-900/20">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveTab("profile");
+                          setAccountMenuOpen(false);
+                        }}
+                        className="w-full rounded-xl px-3 py-2.5 text-left text-sm hover:bg-slate-100"
+                      >
+                        Profile
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveTab("subscription");
+                          setAccountMenuOpen(false);
+                        }}
+                        className="w-full rounded-xl px-3 py-2.5 text-left text-sm hover:bg-slate-100"
+                      >
+                        Subscription
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <button
+                  onClick={signOut}
+                  className="rounded-full border border-white/15 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/12"
+                >
+                  Sign Out
+                </button>
+                <Link className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-cyan-50" href="/">
+                  Home
+                </Link>
+              </div>
+
+              <div className="grid w-full gap-4 sm:grid-cols-2 xl:w-[360px]">
+                <div className="rounded-[28px] border border-white/12 bg-white/10 p-5 backdrop-blur-sm">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-cyan-100/80">Profile readiness</p>
+                  <p className="mt-3 text-3xl font-semibold">{profileCompletion}%</p>
+                  <p className="mt-2 text-sm leading-6 text-slate-200">Your shipper profile, routing details, and billing footprint are visible at a glance.</p>
+                </div>
+                <div className="rounded-[28px] border border-white/12 bg-white/10 p-5 backdrop-blur-sm">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-emerald-100/80">Delivered value</p>
+                  <p className="mt-3 text-3xl font-semibold">{formatUsdCompact(deliveredRevenue)}</p>
+                  <p className="mt-2 text-sm leading-6 text-slate-200">Completed shipment spend that has already moved through the platform.</p>
+                </div>
+              </div>
             </div>
           </div>
         </header>
 
-        {message && <p className="rounded-xl border border-indigo-300 bg-indigo-50 px-4 py-3 text-sm text-indigo-900">{message}</p>}
+        {message && <p className="shipper-premium-card shipper-fade-up rounded-[24px] border border-cyan-200 bg-cyan-50/90 px-5 py-4 text-sm font-medium text-cyan-950">{message}</p>}
 
-        <section className="rounded-2xl bg-white p-3 shadow-sm ring-1 ring-slate-200 md:p-4">
+        <section className="shipper-premium-card shipper-fade-up rounded-[30px] p-4 md:p-5">
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
               onClick={() => setActiveTab("dashboard")}
-              className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+              className={`shipper-tab-pill rounded-full px-4 py-2.5 text-sm font-semibold transition ${
                 activeTab === "dashboard"
-                  ? "bg-indigo-700 text-white"
-                  : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
+                  ? "bg-slate-950 text-white shadow-lg shadow-slate-900/15"
+                  : "border border-slate-300/80 bg-white/90 text-slate-700 hover:bg-slate-100"
               }`}
             >
               Dashboard
             </button>
             <button
               type="button"
+              onClick={() => setActiveTab("metrics")}
+              className={`shipper-tab-pill rounded-full px-4 py-2.5 text-sm font-semibold transition ${
+                activeTab === "metrics"
+                  ? "bg-slate-950 text-white shadow-lg shadow-slate-900/15"
+                  : "border border-slate-300/80 bg-white/90 text-slate-700 hover:bg-slate-100"
+              }`}
+            >
+              Metrics
+            </button>
+            <button
+              type="button"
               onClick={() => setActiveTab("tracking")}
-              className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+              className={`shipper-tab-pill rounded-full px-4 py-2.5 text-sm font-semibold transition ${
                 activeTab === "tracking"
-                  ? "bg-indigo-700 text-white"
-                  : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
+                  ? "bg-slate-950 text-white shadow-lg shadow-slate-900/15"
+                  : "border border-slate-300/80 bg-white/90 text-slate-700 hover:bg-slate-100"
               }`}
             >
               Tracking
@@ -1632,10 +1910,10 @@ export default function ClientPortalPage() {
             <button
               type="button"
               onClick={() => { setActiveTab("create"); setCreateStep("form"); setCreatedMatchResult(null); setCarrierDetail(null); }}
-              className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+              className={`shipper-tab-pill rounded-full px-4 py-2.5 text-sm font-semibold transition ${
                 activeTab === "create"
-                  ? "bg-indigo-700 text-white"
-                  : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
+                  ? "bg-slate-950 text-white shadow-lg shadow-slate-900/15"
+                  : "border border-slate-300/80 bg-white/90 text-slate-700 hover:bg-slate-100"
               }`}
             >
               Create Shipment
@@ -1643,10 +1921,10 @@ export default function ClientPortalPage() {
             <button
               type="button"
               onClick={() => setActiveTab("carrier_history")}
-              className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+              className={`shipper-tab-pill rounded-full px-4 py-2.5 text-sm font-semibold transition ${
                 activeTab === "carrier_history"
-                  ? "bg-indigo-700 text-white"
-                  : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
+                  ? "bg-slate-950 text-white shadow-lg shadow-slate-900/15"
+                  : "border border-slate-300/80 bg-white/90 text-slate-700 hover:bg-slate-100"
               }`}
             >
               Carrier History & Rebook
@@ -1654,10 +1932,10 @@ export default function ClientPortalPage() {
             <button
               type="button"
               onClick={() => setActiveTab("transactions")}
-              className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+              className={`shipper-tab-pill rounded-full px-4 py-2.5 text-sm font-semibold transition ${
                 activeTab === "transactions"
-                  ? "bg-indigo-700 text-white"
-                  : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
+                  ? "bg-slate-950 text-white shadow-lg shadow-slate-900/15"
+                  : "border border-slate-300/80 bg-white/90 text-slate-700 hover:bg-slate-100"
               }`}
             >
               Transaction History
@@ -1665,10 +1943,10 @@ export default function ClientPortalPage() {
             <button
               type="button"
               onClick={() => setActiveTab("documents")}
-              className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+              className={`shipper-tab-pill rounded-full px-4 py-2.5 text-sm font-semibold transition ${
                 activeTab === "documents"
-                  ? "bg-indigo-700 text-white"
-                  : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
+                  ? "bg-slate-950 text-white shadow-lg shadow-slate-900/15"
+                  : "border border-slate-300/80 bg-white/90 text-slate-700 hover:bg-slate-100"
               }`}
             >
               My Documents
@@ -1782,35 +2060,103 @@ export default function ClientPortalPage() {
         {isSubscriptionActive && (activeTab === "dashboard" || activeTab === "tracking") && (
           <section className="space-y-6">
             {activeTab === "dashboard" && (
-              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
-                  <p className="text-xs uppercase tracking-wider text-slate-500">Total</p>
-                  <p className="mt-2 text-2xl font-semibold text-slate-900">{dashboardStats.total}</p>
+              <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+                <div className="space-y-6 shipper-fade-up">
+                  <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                    <DashboardStatCard
+                      label="Total"
+                      value={dashboardStats.total}
+                      detail="Loads created across your active shipper account."
+                      accentClass="bg-slate-950 text-white"
+                      progressClass="bg-gradient-to-r from-slate-700 via-slate-900 to-black"
+                      progress={dashboardStats.total === 0 ? 10 : 100}
+                    />
+                    <DashboardStatCard
+                      label="Awaiting Payment"
+                      value={dashboardStats.awaitingPayment}
+                      detail="Quotes accepted and waiting for confirmed funds."
+                      accentClass="bg-amber-50 text-amber-700"
+                      progressClass="bg-gradient-to-r from-amber-400 to-orange-500"
+                      progress={dashboardMix[0]?.percent || 10}
+                    />
+                    <DashboardStatCard
+                      label="Active"
+                      value={dashboardStats.active}
+                      detail="Shipments currently in motion or in active execution."
+                      accentClass="bg-sky-50 text-sky-700"
+                      progressClass="bg-gradient-to-r from-cyan-400 to-sky-500"
+                      progress={dashboardMix[1]?.percent || 10}
+                    />
+                    <DashboardStatCard
+                      label="Delivered"
+                      value={dashboardStats.delivered}
+                      detail="Completed freight with payment and delivery history."
+                      accentClass="bg-emerald-50 text-emerald-700"
+                      progressClass="bg-gradient-to-r from-emerald-400 to-teal-500"
+                      progress={dashboardMix[2]?.percent || 10}
+                    />
+                  </section>
+
+                  <article className="shipper-premium-card shipper-card-hover rounded-[30px] p-6 md:p-7">
+                    <div className="relative z-10 flex flex-wrap items-start justify-between gap-6">
+                      <div className="max-w-2xl">
+                        <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">Operations overview</p>
+                        <h2 className="mt-3 text-2xl font-semibold tracking-[-0.03em] text-slate-950 md:text-[2rem]">Your freight portfolio feels active, not administrative.</h2>
+                        <p className="mt-3 text-sm leading-7 text-slate-600 md:text-base">
+                          Surface payment risk, route momentum, and delivery throughput in one view so every shipment state feels intentional.
+                        </p>
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="rounded-[24px] border border-slate-200 bg-white/80 px-4 py-4 shadow-sm">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">Quoted volume</p>
+                          <p className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">{formatUsdCompact(dashboardRevenue)}</p>
+                        </div>
+                        <div className="rounded-[24px] border border-slate-200 bg-white/80 px-4 py-4 shadow-sm">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">Delivered value</p>
+                          <p className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">{formatUsdCompact(deliveredRevenue)}</p>
+                        </div>
+                      </div>
+                    </div>
+                  </article>
+
                 </div>
-                <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
-                  <p className="text-xs uppercase tracking-wider text-slate-500">Awaiting Payment</p>
-                  <p className="mt-2 text-2xl font-semibold text-amber-600">{dashboardStats.awaitingPayment}</p>
-                </div>
-                <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
-                  <p className="text-xs uppercase tracking-wider text-slate-500">Active</p>
-                  <p className="mt-2 text-2xl font-semibold text-emerald-600">{dashboardStats.active}</p>
-                </div>
-                <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
-                  <p className="text-xs uppercase tracking-wider text-slate-500">Delivered</p>
-                  <p className="mt-2 text-2xl font-semibold text-indigo-600">{dashboardStats.delivered}</p>
-                </div>
+
+                <aside className="shipper-fade-up space-y-6">
+                  <ShipperActivityChart labels={shipmentActivityChart.labels} values={shipmentActivityChart.values} />
+                  <div className="shipper-premium-card shipper-card-hover rounded-[30px] p-6">
+                    <div className="relative z-10">
+                      <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">Shipment mix</p>
+                      <div className="mt-5 space-y-4">
+                        {dashboardMix.map((item) => (
+                          <div key={item.label}>
+                            <div className="flex items-center justify-between gap-3 text-sm">
+                              <span className="font-medium text-slate-700">{item.label}</span>
+                              <span className="text-slate-500">{item.value} • {item.percent}%</span>
+                            </div>
+                            <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-200/80">
+                              <div className={`h-full rounded-full ${item.barClass}`} style={{ width: `${Math.max(8, item.percent)}%` }} />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </aside>
               </div>
             )}
 
-            <article className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
-              <div className="flex items-center justify-between">
-                <h2 className="text-xl font-semibold">{activeTab === "tracking" ? "Shipment Tracking" : "My Shipments"}</h2>
+            <article className="shipper-premium-card shipper-fade-up rounded-[30px] p-6 md:p-7">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">Shipment ledger</p>
+                  <h2 className="mt-2 text-2xl font-semibold tracking-[-0.03em] text-slate-950">{activeTab === "tracking" ? "Shipment Tracking" : "My Shipments"}</h2>
+                </div>
                 <div className="flex items-center gap-2">
                   {activeTab === "tracking" && (
                     <select
                       value={selectedTrackingRow?.shipment_id || ""}
                       onChange={(event) => setSelectedTrackingShipmentId(event.target.value)}
-                      className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700"
+                      className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 shadow-sm"
                     >
                       {liveTrackingRows.length === 0 && <option value="">No tracked shipments</option>}
                       {liveTrackingRows.map((row) => (
@@ -1823,14 +2169,14 @@ export default function ClientPortalPage() {
                   {activeTab === "tracking" && (
                     <button
                       onClick={() => void loadLiveTracking()}
-                      className="rounded-lg border border-indigo-300 px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50"
+                      className="rounded-full border border-indigo-300 px-4 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50"
                     >
                       {trackingLoading ? "Tracking..." : "Refresh Tracking"}
                     </button>
                   )}
                   <button
                     onClick={() => void loadShipments()}
-                    className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                    className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
                   >
                     {loading ? "Refreshing..." : "Refresh"}
                   </button>
@@ -1839,13 +2185,13 @@ export default function ClientPortalPage() {
 
               <div className="mt-5 space-y-4">
                 {myShipments.length === 0 && (
-                  <p className="rounded-lg border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">
+                  <p className="rounded-[24px] border border-dashed border-slate-300 bg-white/70 p-8 text-center text-sm text-slate-500">
                     No shipments found yet.
                   </p>
                 )}
 
                 {activeTab === "tracking" && liveTrackingRows.length === 0 && myShipments.length > 0 && (
-                  <p className="rounded-lg border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">
+                  <p className="rounded-[24px] border border-dashed border-slate-300 bg-white/70 p-8 text-center text-sm text-slate-500">
                     No live tracking updates available for your shipments yet.
                   </p>
                 )}
@@ -1853,23 +2199,25 @@ export default function ClientPortalPage() {
                 {myShipments
                   .filter((shipment) => activeTab !== "tracking" || !selectedTrackingRow || shipment.id === selectedTrackingRow.shipment_id)
                   .map((shipment) => (
-                  <div key={shipment.id} className="rounded-xl border border-slate-200 p-4">
-                    <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div key={shipment.id} className="shipper-premium-card shipper-card-hover rounded-[28px] p-5 md:p-6">
+                    <div className="relative z-10">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
-                        <h3 className="font-semibold text-slate-900">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">{shipment.load_number}</p>
+                        <h3 className="mt-2 text-lg font-semibold tracking-[-0.02em] text-slate-950 md:text-xl">
                           {shipment.origin} to {shipment.destination}
                         </h3>
-                        <p className="text-sm text-slate-600">
+                        <p className="mt-2 text-sm leading-6 text-slate-600">
                           {shipment.cargo_type} • {toLbFromKg(shipment.weight_kg).toLocaleString()} lb ({shipment.weight_kg.toLocaleString()} kg) • {shipment.time_window}
                         </p>
                       </div>
-                      <span className="rounded-full bg-indigo-100 px-3 py-1 text-xs font-semibold text-indigo-700">
+                      <span className={`rounded-full px-3 py-1.5 text-xs font-semibold ${shipmentStatusBadgeClass(shipment.status)}`}>
                         {statusLabel[shipment.status]}
                       </span>
-                    </div>
+                      </div>
 
-                    {(shipment.carrier_offer_amount !== null || shipment.quote_breakdown) && (
-                      <div className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
+                      {(shipment.carrier_offer_amount !== null || shipment.quote_breakdown) && (
+                        <div className="mt-5 rounded-[22px] border border-amber-200/70 bg-[linear-gradient(180deg,rgba(255,251,235,0.95),rgba(254,243,199,0.55))] p-4 text-sm text-amber-950">
                         <p className="font-semibold">
                           Carrier Offer: ${pendingQuoteAmount(shipment)?.toFixed(2) ?? "0.00"}
                         </p>
@@ -1884,40 +2232,40 @@ export default function ClientPortalPage() {
                             </p>
                           </>
                         )}
-                      </div>
-                    )}
+                        </div>
+                      )}
 
-                    {shipment.quote_status === "pending" && shipment.carrier_offer_amount !== null && (
-                      <button
-                        type="button"
-                        onClick={() => void onAcceptQuote(shipment.id)}
-                        className="mt-3 rounded-lg bg-indigo-700 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-600"
-                      >
-                        Accept Quote
-                      </button>
-                    )}
+                      {shipment.quote_status === "pending" && shipment.carrier_offer_amount !== null && (
+                        <button
+                          type="button"
+                          onClick={() => void onAcceptQuote(shipment.id)}
+                          className="mt-4 rounded-full bg-indigo-700 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-600"
+                        >
+                          Accept Quote
+                        </button>
+                      )}
 
-                    {shipment.quote_status === "accepted" && shipment.payment_status !== "paid" && (
-                      <button
-                        type="button"
-                        onClick={() => void onConfirmAndPay(shipment.id)}
-                        disabled={shipmentCheckoutLoadingId === shipment.id}
-                        className="mt-3 rounded-lg bg-emerald-700 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-600"
-                      >
-                        {shipmentCheckoutLoadingId === shipment.id ? "Opening secure checkout..." : "Pay Now"}
-                      </button>
-                    )}
+                      {shipment.quote_status === "accepted" && shipment.payment_status !== "paid" && (
+                        <button
+                          type="button"
+                          onClick={() => void onConfirmAndPay(shipment.id)}
+                          disabled={shipmentCheckoutLoadingId === shipment.id}
+                          className="mt-4 rounded-full bg-emerald-700 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-600"
+                        >
+                          {shipmentCheckoutLoadingId === shipment.id ? "Opening secure checkout..." : "Pay Now"}
+                        </button>
+                      )}
 
-                    {shipment.payment_status === "paid" && shipment.status === "delivered" && shipment.pod_status === "carrier_confirmed" && shipment.payout_status !== "released" && (
-                      <button
-                        type="button"
-                        onClick={() => void onReleasePayment(shipment.id)}
-                        disabled={releasePaymentLoadingId === shipment.id}
-                        className="mt-3 rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
-                      >
-                        {releasePaymentLoadingId === shipment.id ? "Releasing..." : "Complete Review and Release Now"}
-                      </button>
-                    )}
+                      {shipment.payment_status === "paid" && shipment.status === "delivered" && shipment.pod_status === "carrier_confirmed" && shipment.payout_status !== "released" && (
+                        <button
+                          type="button"
+                          onClick={() => void onReleasePayment(shipment.id)}
+                          disabled={releasePaymentLoadingId === shipment.id}
+                          className="mt-4 rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+                        >
+                          {releasePaymentLoadingId === shipment.id ? "Releasing..." : "Complete Review and Release Now"}
+                        </button>
+                      )}
 
                     {shipment.payment_status === "paid" && shipment.status === "delivered" && shipment.pod_status === "pending" && (
                       <p className="mt-3 text-xs font-semibold text-amber-700">Waiting for driver POD upload before payment release.</p>
@@ -1934,17 +2282,19 @@ export default function ClientPortalPage() {
                       </p>
                     )}
 
-                    <div className="mt-3 grid gap-1 text-xs text-slate-500 sm:grid-cols-2">
+                      <div className="mt-5 grid gap-3 rounded-[22px] bg-slate-50/90 p-4 text-xs text-slate-500 sm:grid-cols-2 lg:grid-cols-4">
                       <p>POD Status: <span className="font-semibold text-slate-700">{podStatusLabel(shipment.pod_status)}</span></p>
                       <p>Payout: <span className="font-semibold text-slate-700">{payoutStatusLabel(shipment.payout_status)}</span></p>
-                    </div>
+                        <p>Payment: <span className="font-semibold text-slate-700">{shipment.payment_status}</span></p>
+                        <p>Carrier: <span className="font-semibold text-slate-700">{shipment.carrier_name || "Awaiting acceptance"}</span></p>
+                      </div>
 
-                    <div className="mt-3 text-xs text-slate-500">
+                      <div className="mt-4 text-xs text-slate-500">
                       Carrier: {shipment.carrier_name || "Awaiting carrier acceptance"}
                       {shipment.estimated_arrival ? ` • ETA ${new Date(shipment.estimated_arrival).toLocaleString()}` : ""}
-                    </div>
+                      </div>
 
-                    {activeTab === "tracking" && (() => {
+                      {activeTab === "tracking" && (() => {
                       const tracking = liveTrackingByShipmentId[shipment.id];
                       if (!tracking) {
                         return null;
@@ -1988,7 +2338,8 @@ export default function ClientPortalPage() {
                           </button>
                         </div>
                       );
-                    })()}
+                      })()}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -2110,38 +2461,42 @@ export default function ClientPortalPage() {
         )}
 
         {activeTab === "profile" && (
-          <section className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
-            <div className="flex items-center justify-between gap-3">
-              <h2 className="text-xl font-semibold">Profile</h2>
-              <button
-                onClick={() => void saveProfile()}
-                disabled={profileSaving || !session?.email}
-                className="rounded-lg bg-indigo-700 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-600 disabled:opacity-50"
-              >
-                {profileSaving ? "Saving..." : "Save Profile"}
-              </button>
-            </div>
-            <p className="mt-1 text-xs text-slate-500">
-              {profile ? `Last updated ${new Date(profile.updated_at).toLocaleString()}` : "Load your profile to edit account details."}
-            </p>
-            <div className="mt-4 grid gap-3 md:grid-cols-2">
+          <section className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
+            <article className="shipper-premium-card shipper-fade-up rounded-[30px] p-6 md:p-7">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">Account profile</p>
+                  <h2 className="mt-2 text-2xl font-semibold tracking-[-0.03em] text-slate-950">Make your shipper identity feel enterprise-ready.</h2>
+                </div>
+                <button
+                  onClick={() => void saveProfile()}
+                  disabled={profileSaving || !session?.email}
+                  className="rounded-full bg-slate-950 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
+                >
+                  {profileSaving ? "Saving..." : "Save Profile"}
+                </button>
+              </div>
+              <p className="mt-3 text-sm leading-7 text-slate-600">
+                {profile ? `Last updated ${new Date(profile.updated_at).toLocaleString()}` : "Load your profile to edit account details."}
+              </p>
+              <div className="mt-6 grid gap-4 md:grid-cols-2">
               <input
                 value={profileForm.full_name}
                 onChange={(event) => setProfileForm((prev) => ({ ...prev, full_name: event.target.value }))}
                 placeholder="Full name"
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 outline-none focus:border-indigo-700"
+                className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none focus:border-indigo-700"
               />
               <input
                 value={profileForm.company_name}
                 onChange={(event) => setProfileForm((prev) => ({ ...prev, company_name: event.target.value }))}
                 placeholder="Company name"
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 outline-none focus:border-indigo-700"
+                className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none focus:border-indigo-700"
               />
               <input
                 value={profileForm.phone}
                 onChange={(event) => setProfileForm((prev) => ({ ...prev, phone: event.target.value }))}
                 placeholder="Phone"
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 outline-none focus:border-indigo-700"
+                className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none focus:border-indigo-700"
               />
               <div ref={streetInputWrapRef} className="relative">
                 <input
@@ -2153,7 +2508,7 @@ export default function ClientPortalPage() {
                   }}
                   onChange={(event) => onStreetInputChange(event.target.value)}
                   placeholder="Street"
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 outline-none focus:border-indigo-700"
+                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none focus:border-indigo-700"
                 />
                 {streetOpen && (
                   <div className="absolute z-40 mt-1 max-h-52 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg">
@@ -2184,7 +2539,7 @@ export default function ClientPortalPage() {
                   }}
                   onChange={(event) => onCityInputChange(event.target.value)}
                   placeholder="City"
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 outline-none focus:border-indigo-700"
+                  className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none focus:border-indigo-700"
                 />
                 {cityOpen && (
                   <div className="absolute z-40 mt-1 max-h-52 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg">
@@ -2212,7 +2567,7 @@ export default function ClientPortalPage() {
                   setCityPlaceId(null);
                   setProfileForm((prev) => ({ ...prev, state: event.target.value }));
                 }}
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 outline-none focus:border-indigo-700"
+                className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none focus:border-indigo-700"
               >
                 <option value="">State</option>
                 {US_STATE_CODES.map((code) => (
@@ -2229,7 +2584,7 @@ export default function ClientPortalPage() {
                   setProfileForm((prev) => ({ ...prev, postal_code: event.target.value }));
                 }}
                 placeholder="ZIP"
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 outline-none focus:border-indigo-700"
+                className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none focus:border-indigo-700"
               />
               <select
                 value={profileForm.country}
@@ -2238,7 +2593,7 @@ export default function ClientPortalPage() {
                   setCityPlaceId(null);
                   setProfileForm((prev) => ({ ...prev, country: event.target.value }));
                 }}
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 outline-none focus:border-indigo-700"
+                className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 outline-none focus:border-indigo-700"
               >
                 <option value="US">US</option>
               </select>
@@ -2247,30 +2602,61 @@ export default function ClientPortalPage() {
                 onChange={(event) => setProfileForm((prev) => ({ ...prev, bio: event.target.value }))}
                 placeholder="Short company bio"
                 rows={3}
-                className="md:col-span-2 w-full rounded-lg border border-slate-300 px-3 py-2 outline-none focus:border-indigo-700"
+                className="md:col-span-2 w-full rounded-[24px] border border-slate-300 bg-white px-4 py-3 outline-none focus:border-indigo-700"
               />
-            </div>
-
-            <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-4">
-              <h3 className="text-sm font-semibold text-slate-900">Stripe Wallet</h3>
-              <p className="mt-1 text-xs text-slate-600">
-                Link a card or bank account for faster quote payments and checkout confirmation.
-              </p>
-              <div className="mt-3 grid gap-2 text-xs text-slate-600 sm:grid-cols-2">
-                <p>
-                  Card linked: <span className="font-semibold text-slate-800">{paymentMethodStatus?.has_card ? "Yes" : "No"}</span>
-                  {paymentMethodStatus?.card_last4 ? (
-                    <span className="ml-1 text-slate-500">(ending in {paymentMethodStatus.card_last4})</span>
-                  ) : null}
-                </p>
-                <p>Bank linked: <span className="font-semibold text-slate-800">{paymentMethodStatus?.has_bank_account ? "Yes" : "No"}</span></p>
               </div>
-              <div className="mt-3 flex flex-wrap gap-2">
+            </article>
+
+            <aside className="shipper-fade-up space-y-6">
+              <div className="shipper-premium-card shipper-card-hover rounded-[30px] p-6">
+                <div className="relative z-10">
+                  <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">Identity snapshot</p>
+                  <div className="mt-4 rounded-[26px] bg-slate-950 p-5 text-white shadow-[0_18px_45px_rgba(15,23,42,0.28)]">
+                    <p className="text-[11px] uppercase tracking-[0.24em] text-cyan-200/80">Profile completion</p>
+                    <p className="mt-2 text-4xl font-semibold tracking-tight">{profileCompletion}%</p>
+                    <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/15">
+                      <div className="h-full rounded-full bg-gradient-to-r from-cyan-300 to-indigo-400" style={{ width: `${Math.max(12, profileCompletion)}%` }} />
+                    </div>
+                    <p className="mt-4 text-sm leading-6 text-slate-300">Complete identity, location, and billing details so carrier conversations and checkout flows feel frictionless.</p>
+                  </div>
+                  <div className="mt-5 grid gap-3 text-sm text-slate-600">
+                    <div className="rounded-[22px] border border-slate-200 bg-white/80 px-4 py-4">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Primary contact</p>
+                      <p className="mt-2 font-semibold text-slate-950">{profileForm.full_name || "Not set"}</p>
+                    </div>
+                    <div className="rounded-[22px] border border-slate-200 bg-white/80 px-4 py-4">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Company</p>
+                      <p className="mt-2 font-semibold text-slate-950">{profileForm.company_name || "Not set"}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="shipper-premium-card shipper-card-hover rounded-[30px] p-6">
+                <div className="relative z-10">
+                  <h3 className="text-lg font-semibold tracking-[-0.02em] text-slate-950">Stripe Wallet</h3>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">
+                    Link a card or bank account for faster quote payments and checkout confirmation.
+                  </p>
+                  <div className="mt-5 grid gap-3 text-sm text-slate-600 sm:grid-cols-2">
+                    <div className="rounded-[22px] border border-slate-200 bg-white/80 px-4 py-4">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Card</p>
+                      <p className="mt-2 font-semibold text-slate-950">
+                        {paymentMethodStatus?.has_card ? "Linked" : "Not linked"}
+                        {paymentMethodStatus?.card_last4 ? ` •••• ${paymentMethodStatus.card_last4}` : ""}
+                      </p>
+                    </div>
+                    <div className="rounded-[22px] border border-slate-200 bg-white/80 px-4 py-4">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Bank account</p>
+                      <p className="mt-2 font-semibold text-slate-950">{paymentMethodStatus?.has_bank_account ? "Linked" : "Not linked"}</p>
+                    </div>
+                  </div>
+                  <div className="mt-5 flex flex-wrap gap-2">
                 <button
                   type="button"
                   onClick={() => void startWalletSetup("card")}
                   disabled={walletSetupLoading !== null || walletRemoveLoading}
-                  className="rounded-lg border border-indigo-300 bg-white px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 disabled:opacity-60"
+                  className="rounded-full border border-indigo-300 bg-white px-4 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 disabled:opacity-60"
                 >
                   {walletSetupLoading === "card" ? "Opening Stripe..." : "Link Card"}
                 </button>
@@ -2278,7 +2664,7 @@ export default function ClientPortalPage() {
                   type="button"
                   onClick={() => void removeLinkedCard()}
                   disabled={walletRemoveLoading || !paymentMethodStatus?.has_card || walletSetupLoading !== null}
-                  className="rounded-lg border border-rose-300 bg-white px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50 disabled:opacity-60"
+                  className="rounded-full border border-rose-300 bg-white px-4 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50 disabled:opacity-60"
                 >
                   {walletRemoveLoading ? "Removing Card..." : "Remove Card"}
                 </button>
@@ -2286,7 +2672,7 @@ export default function ClientPortalPage() {
                   type="button"
                   onClick={() => void startWalletSetup("bank_account")}
                   disabled={walletSetupLoading !== null || walletRemoveLoading}
-                  className="rounded-lg border border-indigo-300 bg-white px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 disabled:opacity-60"
+                  className="rounded-full border border-indigo-300 bg-white px-4 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 disabled:opacity-60"
                 >
                   {walletSetupLoading === "bank_account" ? "Opening Stripe..." : "Link Bank Account"}
                 </button>
@@ -2294,12 +2680,46 @@ export default function ClientPortalPage() {
                   type="button"
                   onClick={() => void loadSubscriptionState(true)}
                   disabled={subscriptionLoading}
-                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                  className="rounded-full border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
                 >
                   Refresh Wallet Status
                 </button>
+                  </div>
+                </div>
               </div>
+            </aside>
+          </section>
+        )}
+
+        {isSubscriptionActive && activeTab === "metrics" && (
+          <section className="space-y-6">
+            <div className="shipper-premium-card shipper-fade-up rounded-[30px] p-6 md:p-7">
+              <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">Performance metrics</p>
+              <h2 className="mt-2 text-2xl font-semibold tracking-[-0.03em] text-slate-950">This month performance snapshot</h2>
             </div>
+
+            <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <div className="shipper-premium-card shipper-card-hover rounded-[24px] p-5 text-center">
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Total spend this month</p>
+                <p className="mt-3 text-3xl font-bold tracking-tight text-slate-950">{formatUsdCompact(shipperAnalytics.totalSpendThisMonth)}</p>
+                <p className="mt-2 text-xs text-slate-600">Sum of all quoted shipments</p>
+              </div>
+              <div className="shipper-premium-card shipper-card-hover rounded-[24px] p-5 text-center">
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Loads completed</p>
+                <p className="mt-3 text-3xl font-bold tracking-tight text-emerald-600">{shipperAnalytics.loadsCompletedThisMonth}</p>
+                <p className="mt-2 text-xs text-slate-600">Delivered this month</p>
+              </div>
+              <div className="shipper-premium-card shipper-card-hover rounded-[24px] p-5 text-center">
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Avg transit time</p>
+                <p className="mt-3 text-3xl font-bold tracking-tight text-sky-600">{Math.round(shipperAnalytics.avgTransitHours)}h</p>
+                <p className="mt-2 text-xs text-slate-600">Hours per shipment</p>
+              </div>
+              <div className="shipper-premium-card shipper-card-hover rounded-[24px] p-5 text-center">
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Avg cost per mile</p>
+                <p className="mt-3 text-3xl font-bold tracking-tight text-amber-600">${shipperAnalytics.avgCostPerMile.toFixed(2)}</p>
+                <p className="mt-2 text-xs text-slate-600">Cost efficiency metric</p>
+              </div>
+            </section>
           </section>
         )}
 

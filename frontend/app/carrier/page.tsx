@@ -93,6 +93,127 @@ function ProfileIcon(props: Readonly<{ className?: string }>) {
   );
 }
 
+function formatUsdCompact(amount: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    notation: amount >= 10000 ? "compact" : "standard",
+    maximumFractionDigits: amount >= 10000 ? 1 : 0,
+  }).format(amount);
+}
+
+function carrierShipmentStatusBadgeClass(status: Shipment["status"]): string {
+  if (status === "delivered") {
+    return "border border-emerald-200 bg-emerald-50 text-emerald-700";
+  }
+  if (status === "active" || status === "in_transit") {
+    return "border border-sky-200 bg-sky-50 text-sky-700";
+  }
+  if (status === "offered" || status === "awaiting_payment") {
+    return "border border-amber-200 bg-amber-50 text-amber-700";
+  }
+  return "border border-slate-200 bg-slate-100 text-slate-700";
+}
+
+function buildCarrierActivityPath(values: number[]): string {
+  const width = 320;
+  const height = 120;
+  const maxValue = Math.max(...values, 1);
+
+  return values.map((value, index) => {
+    const x = values.length === 1 ? width / 2 : (index / (values.length - 1)) * width;
+    const y = height - (value / maxValue) * 88 - 12;
+    return `${index === 0 ? "M" : "L"}${x.toFixed(2)},${y.toFixed(2)}`;
+  }).join(" ");
+}
+
+function buildMetricChartPath(values: number[], width = 280, height = 100): string {
+  const maxValue = Math.max(...values, 1);
+  const padding = 8;
+  
+  return values.map((value, index) => {
+    const x = values.length === 1 ? width / 2 : (index / (values.length - 1)) * width;
+    const y = height - padding - (value / maxValue) * (height - padding * 2);
+    return `${index === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+}
+
+function CarrierStatCard(props: Readonly<{
+  label: string;
+  value: string | number;
+  detail: string;
+  accentClass: string;
+  progressClass: string;
+  progress: number;
+}>) {
+  const { label, value, detail, accentClass, progressClass, progress } = props;
+
+  return (
+    <div className="carrier-premium-card carrier-card-hover rounded-[28px] p-5">
+      <div className="relative z-10">
+        <div className={`inline-flex rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.24em] ${accentClass}`}>
+          {label}
+        </div>
+        <p className="mt-4 text-3xl font-semibold tracking-tight text-slate-950">{value}</p>
+        <p className="mt-2 text-sm leading-6 text-slate-600">{detail}</p>
+        <div className="mt-5 h-2 overflow-hidden rounded-full bg-slate-200/80">
+          <div className={`h-full rounded-full ${progressClass}`} style={{ width: `${Math.max(10, Math.min(100, progress))}%` }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CarrierActivityChart(props: Readonly<{
+  labels: string[];
+  values: number[];
+}>) {
+  const { labels, values } = props;
+  const path = buildCarrierActivityPath(values);
+  const maxValue = Math.max(...values, 1);
+
+  return (
+    <div className="relative overflow-hidden rounded-[28px] border border-white/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(236,253,245,0.82))] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.6)]">
+      <div className="carrier-grid-glow absolute inset-0 opacity-60" />
+      <div className="relative z-10">
+        <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-500">Dispatch tempo</p>
+        <div className="mt-4 rounded-[24px] bg-slate-950 px-4 py-4 text-white shadow-[0_18px_45px_rgba(15,23,42,0.28)]">
+          <div className="flex items-end justify-between gap-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.22em] text-emerald-200/80">Recent operations</p>
+              <p className="mt-2 text-3xl font-semibold tracking-tight">{maxValue}</p>
+            </div>
+            <p className="max-w-[180px] text-right text-xs leading-5 text-slate-300">A compact signal for offer flow, execution, and delivered load momentum.</p>
+          </div>
+          <svg viewBox="0 0 320 120" className="mt-4 h-32 w-full" role="img" aria-label="Recent carrier activity chart">
+            <defs>
+              <linearGradient id="carrierActivityStroke" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%" stopColor="#34d399" />
+                <stop offset="100%" stopColor="#38bdf8" />
+              </linearGradient>
+            </defs>
+            <path d={path} fill="none" stroke="url(#carrierActivityStroke)" strokeWidth="4" strokeLinecap="round" />
+            {values.map((value, index) => {
+              const x = values.length === 1 ? 160 : (index / (values.length - 1)) * 320;
+              const y = 120 - (value / maxValue) * 88 - 12;
+              return (
+                <g key={`carrier-activity-point-${index}-${labels[index] ?? "label"}-${value}`}>
+                  <circle cx={x} cy={y} r="5" fill="#0f172a" stroke="#34d399" strokeWidth="3" />
+                </g>
+              );
+            })}
+          </svg>
+          <div className="mt-2 grid grid-cols-6 gap-2 text-[11px] uppercase tracking-[0.18em] text-slate-400">
+            {labels.map((label, index) => (
+              <span key={`carrier-activity-label-${index}-${label}`} className="truncate text-center">{label}</span>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function openStripeHostedFlow(url: string): boolean {
   const popupWidth = 560;
   const popupHeight = 760;
@@ -750,7 +871,7 @@ export default function CarrierPortalPage() {
   } | null>(null);
   const [profile, setProfile] = useState<AuthProfile | null>(null);
   const [profileSaving, setProfileSaving] = useState(false);
-  const [activeTab, setActiveTab] = useState<"dashboard" | "tracking" | "queue" | "optimization" | "payments" | "transactions" | "documents" | "drivers" | "profile" | "subscription">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "metrics" | "tracking" | "queue" | "optimization" | "payments" | "transactions" | "documents" | "drivers" | "profile" | "subscription">("dashboard");
   const [subscriptionPlans, setSubscriptionPlans] = useState<BillingPlan[]>([]);
   const [subscriptionStatus, setSubscriptionStatus] = useState<BillingStatus | null>(null);
   const [subscriptionNotice, setSubscriptionNotice] = useState<string | null>(null);
@@ -1724,6 +1845,153 @@ export default function CarrierPortalPage() {
     [acceptedByMe]
   );
 
+  const carrierDashboardMix = useMemo(() => {
+    const total = Math.max(queue.length, 1);
+    return [
+      {
+        label: "Open offers",
+        value: offersForMe.length,
+        percent: Math.round((offersForMe.length / total) * 100),
+        barClass: "bg-gradient-to-r from-amber-400 to-orange-500",
+      },
+      {
+        label: "In motion",
+        value: activeShipments.length,
+        percent: Math.round((activeShipments.length / total) * 100),
+        barClass: "bg-gradient-to-r from-cyan-400 to-sky-500",
+      },
+      {
+        label: "Delivered",
+        value: deliveredShipments.length,
+        percent: Math.round((deliveredShipments.length / total) * 100),
+        barClass: "bg-gradient-to-r from-emerald-400 to-teal-500",
+      },
+    ];
+  }, [queue.length, offersForMe.length, activeShipments.length, deliveredShipments.length]);
+
+  const carrierActivityChart = useMemo(() => {
+    const recentShipments = [...queue]
+      .sort((a, b) => new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime())
+      .slice(-6);
+
+    if (recentShipments.length === 0) {
+      return {
+        labels: ["Jan", "Feb", "Mar", "Apr", "May", "Jun"],
+        values: [1, 3, 2, 4, 3, 5],
+      };
+    }
+
+    return {
+      labels: recentShipments.map((shipment) => new Date(shipment.updated_at).toLocaleDateString("en-US", { month: "short" })),
+      values: recentShipments.map((shipment) => {
+        if (shipment.status === "delivered") {
+          return 5;
+        }
+        if (shipment.status === "active" || shipment.status === "in_transit") {
+          return 4;
+        }
+        if (shipment.status === "accepted" || shipment.status === "awaiting_payment") {
+          return 3;
+        }
+        if (shipment.status === "offered") {
+          return 2;
+        }
+        return 1;
+      }),
+    };
+  }, [queue]);
+
+  const carrierProfileCompletion = useMemo(() => {
+    const checks = [
+      profileForm.full_name,
+      profileForm.company_name,
+      profileForm.tax_id,
+      profileForm.dot_number,
+      profileForm.phone,
+      profileForm.street,
+      profileForm.city,
+      profileForm.state,
+      profileForm.postal_code,
+      profileForm.bio,
+    ];
+    const complete = checks.filter((value) => value.trim().length > 0).length;
+    return Math.round((complete / checks.length) * 100);
+  }, [profileForm]);
+
+  const weeklyMetricsData = useMemo(() => {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const thisMonthShipments = deliveredShipments.filter((s) => new Date(s.created_at) >= monthStart);
+    
+    // Get weeks in current month (4 weeks)
+    const weeks = [
+      { start: monthStart, end: new Date(monthStart.getTime() + 7 * 24 * 60 * 60 * 1000) },
+      { start: new Date(monthStart.getTime() + 7 * 24 * 60 * 60 * 1000), end: new Date(monthStart.getTime() + 14 * 24 * 60 * 60 * 1000) },
+      { start: new Date(monthStart.getTime() + 14 * 24 * 60 * 60 * 1000), end: new Date(monthStart.getTime() + 21 * 24 * 60 * 60 * 1000) },
+      { start: new Date(monthStart.getTime() + 21 * 24 * 60 * 60 * 1000), end: new Date(monthStart.getTime() + 28 * 24 * 60 * 60 * 1000) },
+    ];
+    
+    const weeklyRevenue = weeks.map((week) => {
+      return thisMonthShipments
+        .filter((s) => {
+          const shipDate = new Date(s.created_at);
+          return shipDate >= week.start && shipDate < week.end;
+        })
+        .reduce((sum, s) => {
+          const quote = s.quote_breakdown;
+          if (quote?.service_fee_usd) {
+            return sum + Number.parseFloat(quote.service_fee_usd.toString());
+          }
+          return sum;
+        }, 0);
+    });
+    
+    const weeklyLoads = weeks.map((week) => {
+      return thisMonthShipments.filter((s) => {
+        const shipDate = new Date(s.created_at);
+        return shipDate >= week.start && shipDate < week.end;
+      }).length;
+    });
+    
+    return {
+      weeklyRevenue,
+      weeklyLoads,
+    };
+  }, [deliveredShipments]);
+
+  const carrierAnalytics = useMemo(() => {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const thisMonthShipments = deliveredShipments.filter((s) => new Date(s.created_at) >= monthStart);
+    
+    // Revenue this month
+    const revenueThisMonth = thisMonthShipments.reduce((sum, s) => {
+      const quote = s.quote_breakdown;
+      if (quote?.service_fee_usd) {
+        return sum + Number.parseFloat(quote.service_fee_usd.toString());
+      }
+      return sum;
+    }, 0);
+    
+    // Loads completed this month
+    const loadsCompletedThisMonth = thisMonthShipments.length;
+    
+    // Driver utilization (active shipments / total drivers)
+    const activeWithDrivers = activeShipments.filter((s) => s.assigned_driver_id).length;
+    const totalDrivers = Math.max(carrierDrivers.length, 1);
+    const driverUtilization = Math.round((activeWithDrivers / totalDrivers) * 100);
+    
+    // Active routes (number of shipments with assigned drivers currently in motion)
+    const activeRoutes = activeWithDrivers;
+    
+    return {
+      revenueThisMonth,
+      loadsCompletedThisMonth,
+      driverUtilization,
+      activeRoutes,
+    };
+  }, [deliveredShipments, activeShipments, carrierDrivers]);
+
   function signOut() {
     clearAuthLiteSession("carrier");
     setSession(null);
@@ -2144,70 +2412,94 @@ export default function CarrierPortalPage() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-100 p-6 text-slate-900 md:p-10">
+    <main className="carrier-portal-shell min-h-screen px-4 py-6 text-slate-900 md:px-8 md:py-10">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-8">
-        <header className="rounded-3xl bg-emerald-900 p-8 text-white shadow-lg">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+        <header className="carrier-hero-card carrier-fade-up rounded-[36px] p-8 text-white md:p-10">
+          <div className="relative z-10 grid gap-8 xl:grid-cols-[1.35fr_0.85fr] xl:items-start">
             <div>
-              <p className="text-xs uppercase tracking-[0.2em] text-emerald-200">Carrier Portal</p>
-              <h1 className="mt-2 text-3xl font-semibold md:text-4xl">Dispatch Offer Console</h1>
-              <p className="mt-3 max-w-3xl text-emerald-100">
-                Receive job offers, accept or reject requests, then execute active shipments after client payment.
-              </p>
-            </div>
-            <div className="flex gap-2">
-              <div className="relative" ref={accountMenuRef}>
-                <button
-                  type="button"
-                  onClick={() => setAccountMenuOpen((prev) => !prev)}
-                  aria-label="Open my account menu"
-                  aria-expanded={accountMenuOpen}
-                  className="flex items-center gap-2 rounded-lg border border-emerald-200/50 px-3 py-2 text-sm font-semibold hover:bg-white/20"
-                >
-                  <span>My Account</span>
-                  <ProfileIcon className="h-5 w-5" />
-                </button>
-                {accountMenuOpen && (
-                  <div className="absolute right-0 top-12 z-20 w-52 rounded-xl border border-emerald-200 bg-white p-2 text-slate-900 shadow-xl">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActiveTab("profile");
-                        setAccountMenuOpen(false);
-                      }}
-                      className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-slate-100"
-                    >
-                      Profile
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActiveTab("subscription");
-                        setAccountMenuOpen(false);
-                      }}
-                      className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-slate-100"
-                    >
-                      Subscription
-                    </button>
-                  </div>
-                )}
+              <div className="inline-flex rounded-full border border-white/15 bg-white/10 px-4 py-1.5 text-[11px] font-semibold uppercase tracking-[0.28em] text-emerald-100">
+                Carrier workspace
               </div>
-              <button
-                onClick={signOut}
-                className="rounded-lg border border-emerald-200/50 px-4 py-2 text-sm font-semibold hover:bg-white/20"
-              >
-                Sign Out
-              </button>
-              <a className="rounded-lg bg-white/15 px-4 py-2 text-sm font-semibold hover:bg-white/25" href="/">
-                Home
-              </a>
+              <h1 className="mt-5 max-w-4xl text-4xl font-semibold tracking-[-0.03em] text-white md:text-5xl">Operate dispatch, pricing, routing, and payouts from one polished command center.</h1>
+              <p className="mt-4 max-w-3xl text-base leading-7 text-emerald-50/90 md:text-lg">
+                Receive job offers, respond with structured quotes, optimize routes, assign drivers, and manage paid shipments through a carrier experience that feels client-grade.
+              </p>
+              <div className="mt-6 flex flex-wrap gap-3 text-sm text-white/90">
+                <div className="rounded-full border border-white/12 bg-white/10 px-4 py-2">{profile?.company_name || "Carrier account"}</div>
+                <div className="rounded-full border border-white/12 bg-white/10 px-4 py-2">{queue.length} loads in pipeline</div>
+                <div className="rounded-full border border-white/12 bg-white/10 px-4 py-2">{formatUsdCompact(totalEarned)} earned</div>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-4 xl:items-end">
+              <div className="flex flex-wrap justify-end gap-2">
+                <div className="relative" ref={accountMenuRef}>
+                  <button
+                    type="button"
+                    onClick={() => setAccountMenuOpen((prev) => !prev)}
+                    aria-label="Open my account menu"
+                    aria-expanded={accountMenuOpen}
+                    className="flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/16"
+                  >
+                    <span>My Account</span>
+                    <ProfileIcon className="h-5 w-5" />
+                  </button>
+                  {accountMenuOpen && (
+                    <div className="absolute right-0 top-14 z-20 w-56 rounded-2xl border border-emerald-200/60 bg-white p-2 text-slate-900 shadow-2xl shadow-slate-900/20">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveTab("profile");
+                          setAccountMenuOpen(false);
+                        }}
+                        className="w-full rounded-xl px-3 py-2.5 text-left text-sm hover:bg-slate-100"
+                      >
+                        Profile
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveTab("subscription");
+                          setAccountMenuOpen(false);
+                        }}
+                        className="w-full rounded-xl px-3 py-2.5 text-left text-sm hover:bg-slate-100"
+                      >
+                        Subscription
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <button
+                  onClick={signOut}
+                  className="rounded-full border border-white/15 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/12"
+                >
+                  Sign Out
+                </button>
+                <Link className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-emerald-50" href="/">
+                  Home
+                </Link>
+              </div>
+
+              <div className="grid w-full gap-4 sm:grid-cols-2 xl:w-[360px]">
+                <div className="rounded-[28px] border border-white/12 bg-white/10 p-5 backdrop-blur-sm">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-emerald-100/80">Profile readiness</p>
+                  <p className="mt-3 text-3xl font-semibold">{carrierProfileCompletion}%</p>
+                  <p className="mt-2 text-sm leading-6 text-emerald-50/85">Keep operations, payout, and compliance details complete for faster driver assignment and shipper trust.</p>
+                </div>
+                <div className="rounded-[28px] border border-white/12 bg-white/10 p-5 backdrop-blur-sm">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-cyan-100/80">Pending revenue</p>
+                  <p className="mt-3 text-3xl font-semibold">{formatUsdCompact(totalPending)}</p>
+                  <p className="mt-2 text-sm leading-6 text-emerald-50/85">Quoted and accepted work that has not yet fully settled into paid revenue.</p>
+                </div>
+              </div>
             </div>
           </div>
         </header>
 
-        <nav className="flex flex-wrap gap-2">
+        <nav className="carrier-premium-card carrier-fade-up flex flex-wrap gap-2 rounded-[30px] p-4 md:p-5">
           {([
             { key: "dashboard", label: "Dashboard" },
+            { key: "metrics", label: "Metrics" },
             { key: "tracking", label: "Tracking" },
             { key: "queue", label: "Queue & Offers" },
             { key: "optimization", label: "Route Optimization" },
@@ -2220,10 +2512,10 @@ export default function CarrierPortalPage() {
               key={key}
               type="button"
               onClick={() => setActiveTab(key)}
-              className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+              className={`carrier-tab-pill rounded-full px-4 py-2.5 text-sm font-semibold transition ${
                 activeTab === key
-                  ? "bg-emerald-700 text-white"
-                  : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
+                  ? "bg-slate-950 text-white shadow-lg shadow-slate-900/15"
+                  : "border border-slate-300/80 bg-white/90 text-slate-700 hover:bg-slate-100"
               }`}
             >
               {label}
@@ -2232,7 +2524,7 @@ export default function CarrierPortalPage() {
         </nav>
 
         {message && (
-          <p className="rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+          <p className="carrier-premium-card carrier-fade-up rounded-[24px] border border-emerald-300 bg-emerald-50/90 px-5 py-4 text-sm font-medium text-emerald-950">
             {message}
           </p>
         )}
@@ -2355,60 +2647,103 @@ export default function CarrierPortalPage() {
 
         {isSubscriptionActive && activeTab === "dashboard" && (
           <section className="space-y-6">
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              {[
-                { label: "Total Shipments", value: queue.length },
-                { label: "Pending Offers", value: offersForMe.length, accent: "text-amber-600" },
-                { label: "Active", value: activeShipments.length, accent: "text-emerald-700" },
-                { label: "Delivered", value: deliveredShipments.length },
-              ].map(({ label, value, accent }) => (
-                <div key={label} className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
-                  <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">{label}</p>
-                  <p className={`mt-2 text-3xl font-bold ${accent ?? "text-slate-900"}`}>{value}</p>
+            <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+              <div className="space-y-6 carrier-fade-up">
+                <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                  <CarrierStatCard label="Pipeline" value={queue.length} detail="All loads and offers currently visible in your carrier workspace." accentClass="bg-slate-950 text-white" progressClass="bg-gradient-to-r from-slate-700 via-slate-900 to-black" progress={queue.length === 0 ? 10 : 100} />
+                  <CarrierStatCard label="Open Offers" value={offersForMe.length} detail="Opportunities still waiting on your pricing or acceptance decision." accentClass="bg-amber-50 text-amber-700" progressClass="bg-gradient-to-r from-amber-400 to-orange-500" progress={carrierDashboardMix[0]?.percent || 10} />
+                  <CarrierStatCard label="Active" value={activeShipments.length} detail="Shipments assigned and currently in execution or live movement." accentClass="bg-sky-50 text-sky-700" progressClass="bg-gradient-to-r from-cyan-400 to-sky-500" progress={carrierDashboardMix[1]?.percent || 10} />
+                  <CarrierStatCard label="Delivered" value={deliveredShipments.length} detail="Completed work with route history, payout state, and payment traceability." accentClass="bg-emerald-50 text-emerald-700" progressClass="bg-gradient-to-r from-emerald-400 to-teal-500" progress={carrierDashboardMix[2]?.percent || 10} />
+                </section>
+
+                <article className="carrier-premium-card carrier-card-hover rounded-[30px] p-6 md:p-7">
+                  <div className="relative z-10 flex flex-wrap items-start justify-between gap-6">
+                    <div className="max-w-2xl">
+                      <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">Operations overview</p>
+                      <h2 className="mt-3 text-2xl font-semibold tracking-[-0.03em] text-slate-950 md:text-[2rem]">Your carrier workspace should feel revenue-driving, not clerical.</h2>
+                      <p className="mt-3 text-sm leading-7 text-slate-600 md:text-base">Surface load flow, route readiness, and payment momentum in a layout that supports pricing decisions and daily dispatch rhythm.</p>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="rounded-[24px] border border-slate-200 bg-white/80 px-4 py-4 shadow-sm">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">Earned</p>
+                        <p className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">{formatUsdCompact(totalEarned)}</p>
+                      </div>
+                      <div className="rounded-[24px] border border-slate-200 bg-white/80 px-4 py-4 shadow-sm">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">Pending</p>
+                        <p className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">{formatUsdCompact(totalPending)}</p>
+                      </div>
+                    </div>
+                  </div>
+                </article>
+              </div>
+
+              <aside className="carrier-fade-up space-y-6">
+                <CarrierActivityChart labels={carrierActivityChart.labels} values={carrierActivityChart.values} />
+                <div className="carrier-premium-card carrier-card-hover rounded-[30px] p-6">
+                  <div className="relative z-10">
+                    <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">Load mix</p>
+                    <div className="mt-5 space-y-4">
+                      {carrierDashboardMix.map((item) => (
+                        <div key={item.label}>
+                          <div className="flex items-center justify-between gap-3 text-sm">
+                            <span className="font-medium text-slate-700">{item.label}</span>
+                            <span className="text-slate-500">{item.value} • {item.percent}%</span>
+                          </div>
+                          <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-200/80">
+                            <div className={`h-full rounded-full ${item.barClass}`} style={{ width: `${Math.max(8, item.percent)}%` }} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
-              ))}
+              </aside>
             </div>
 
-            <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
-              <div className="flex items-center justify-between gap-3">
-                <h2 className="text-xl font-semibold">All Shipments</h2>
+            <div className="carrier-premium-card carrier-fade-up rounded-[30px] p-6 md:p-7">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">Shipment ledger</p>
+                  <h2 className="mt-2 text-2xl font-semibold tracking-[-0.03em] text-slate-950">All Shipments</h2>
+                </div>
                 <button
                   onClick={() => void loadShipments()}
-                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                  className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
                 >
                   {loading ? "Refreshing..." : "Refresh"}
                 </button>
               </div>
 
-              <div className="mt-5 space-y-3">
+              <div className="mt-5 space-y-4">
                 {queue.length === 0 && (
-                  <p className="rounded-lg border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">
+                  <p className="rounded-[24px] border border-dashed border-slate-300 bg-white/70 p-8 text-center text-sm text-slate-500">
                     No shipments yet.
                   </p>
                 )}
                 {queue.map((shipment) => (
-                  <div key={shipment.id} className="rounded-xl border border-slate-200 p-4">
-                    <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div key={shipment.id} className="carrier-premium-card carrier-card-hover rounded-[28px] p-5 md:p-6">
+                    <div className="relative z-10 flex flex-wrap items-start justify-between gap-3">
                       <div>
-                        <p className="font-semibold text-slate-900">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">{shipment.load_number}</p>
+                        <p className="mt-2 text-lg font-semibold tracking-[-0.02em] text-slate-950 md:text-xl">
                           {shipment.origin} to {shipment.destination}
                         </p>
-                        <p className="mt-0.5 text-sm text-slate-500">
+                        <p className="mt-2 text-sm leading-6 text-slate-600">
                           {shipment.client_name} • {shipment.cargo_type} • {toLbFromKg(shipment.weight_kg).toLocaleString()} lb • {shipment.time_window}
                         </p>
                         {shipment.carrier_name && (
-                          <p className="mt-0.5 text-xs text-emerald-700">Carrier: {shipment.carrier_name}</p>
+                          <p className="mt-1 text-xs font-medium text-emerald-700">Carrier: {shipment.carrier_name}</p>
                         )}
                       </div>
                       <div className="flex flex-col items-end gap-1">
-                        <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">
+                        <span className={`rounded-full px-3 py-1.5 text-xs font-semibold ${carrierShipmentStatusBadgeClass(shipment.status)}`}>
                           {statusLabel[shipment.status]}
                         </span>
                         <span className="text-xs text-slate-400">{new Date(shipment.created_at).toLocaleDateString()}</span>
                       </div>
                     </div>
                     {shipment.quote_breakdown && (
-                      <p className="mt-2 text-xs text-amber-700">
+                      <p className="mt-4 rounded-[18px] border border-amber-200/70 bg-[linear-gradient(180deg,rgba(255,251,235,0.95),rgba(254,243,199,0.55))] px-4 py-3 text-xs font-medium text-amber-900">
                         Quote ${shipment.quote_breakdown.total_usd.toFixed(2)} • ETA {shipment.quote_breakdown.estimated_delivery_time}
                       </p>
                     )}
@@ -2419,24 +2754,161 @@ export default function CarrierPortalPage() {
           </section>
         )}
 
+        {isSubscriptionActive && activeTab === "metrics" && (
+          <section className="space-y-6">
+            <div className="carrier-premium-card carrier-fade-up rounded-[30px] p-6 md:p-7">
+              <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">Performance metrics</p>
+              <h2 className="mt-2 text-2xl font-semibold tracking-[-0.03em] text-slate-950">This Month's Performance</h2>
+            </div>
+
+            <div className="grid gap-6 xl:grid-cols-2">
+              <div className="carrier-premium-card rounded-[28px] p-6">
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Revenue Trend</p>
+                <div className="mt-5 rounded-[20px] bg-slate-950 p-5 text-white shadow-[0_18px_45px_rgba(15,23,42,0.28)]">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <p className="text-[11px] uppercase tracking-[0.22em] text-emerald-200/80">Total Revenue</p>
+                      <p className="mt-2 text-3xl font-semibold tracking-tight">{formatUsdCompact(carrierAnalytics.revenueThisMonth)}</p>
+                    </div>
+                    <svg viewBox="0 0 280 100" className="h-16 w-32" role="img" aria-label="Revenue trend chart">
+                      <defs>
+                        <linearGradient id="revenueTrendFill" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#34d399" />
+                          <stop offset="100%" stopColor="#34d399" />
+                        </linearGradient>
+                      </defs>
+                      <path d={buildMetricChartPath(weeklyMetricsData.weeklyRevenue, 280, 100)} fill="none" stroke="#34d399" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                      <path d={`${buildMetricChartPath(weeklyMetricsData.weeklyRevenue, 280, 100)} L280,100 L0,100 Z`} fill="url(#revenueTrendFill)" opacity="0.15" />
+                    </svg>
+                  </div>
+                  <p className="mt-3 text-xs leading-5 text-slate-300">Weekly revenue trend - earnings from completed shipments.</p>
+                </div>
+              </div>
+
+              <div className="carrier-premium-card rounded-[28px] p-6">
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Loads Completed</p>
+                <div className="mt-5 rounded-[20px] bg-slate-950 p-5 text-white shadow-[0_18px_45px_rgba(15,23,42,0.28)]">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <p className="text-[11px] uppercase tracking-[0.22em] text-emerald-200/80">Deliveries</p>
+                      <p className="mt-2 text-3xl font-semibold tracking-tight">{carrierAnalytics.loadsCompletedThisMonth}</p>
+                    </div>
+                    <svg viewBox="0 0 280 100" className="h-16 w-32" role="img" aria-label="Loads trend chart">
+                      <defs>
+                        <linearGradient id="loadsTrendFill" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#f59e0b" />
+                          <stop offset="100%" stopColor="#f59e0b" />
+                        </linearGradient>
+                      </defs>
+                      <path d={buildMetricChartPath(weeklyMetricsData.weeklyLoads, 280, 100)} fill="none" stroke="#f59e0b" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                      <path d={`${buildMetricChartPath(weeklyMetricsData.weeklyLoads, 280, 100)} L280,100 L0,100 Z`} fill="url(#loadsTrendFill)" opacity="0.15" />
+                    </svg>
+                  </div>
+                  <p className="mt-3 text-xs leading-5 text-slate-300">Weekly loads trend - shipments delivered per week.</p>
+                </div>
+              </div>
+
+              <div className="carrier-premium-card rounded-[28px] p-6">
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Driver Utilization</p>
+                <div className="mt-5 rounded-[20px] bg-slate-950 p-5 text-white shadow-[0_18px_45px_rgba(15,23,42,0.28)]">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <p className="text-[11px] uppercase tracking-[0.22em] text-sky-200/80">Fleet Efficiency</p>
+                      <p className="mt-2 text-3xl font-semibold tracking-tight">{carrierAnalytics.driverUtilization}%</p>
+                    </div>
+                    <svg viewBox="0 0 100 60" className="h-12 w-16" role="img" aria-label="Utilization gauge">
+                      <circle cx="50" cy="50" r="35" fill="none" stroke="rgba(71, 235, 198, 0.2)" strokeWidth="3" />
+                      <path d={`M50,50 L${50 + 35 * Math.cos((carrierAnalytics.driverUtilization / 100 * 180 - 90) * Math.PI / 180)},${50 + 35 * Math.sin((carrierAnalytics.driverUtilization / 100 * 180 - 90) * Math.PI / 180)}`} stroke="#34d399" strokeWidth="3" strokeLinecap="round" />
+                    </svg>
+                  </div>
+                  <p className="mt-3 text-xs leading-5 text-slate-300">Percentage of active drivers with assigned shipments.</p>
+                </div>
+              </div>
+
+              <div className="carrier-premium-card rounded-[28px] p-6">
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Active Routes</p>
+                <div className="mt-5 rounded-[20px] bg-slate-950 p-5 text-white shadow-[0_18px_45px_rgba(15,23,42,0.28)]">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <p className="text-[11px] uppercase tracking-[0.22em] text-amber-200/80">In Motion</p>
+                      <p className="mt-2 text-3xl font-semibold tracking-tight">{carrierAnalytics.activeRoutes}</p>
+                    </div>
+                    <svg viewBox="0 0 100 60" className="h-12 w-16" role="img" aria-label="Active routes">
+                      <defs>
+                        <linearGradient id="routesTrendFill" x1="0" y1="0" x2="1" y2="1">
+                          <stop offset="0%" stopColor="#fbbf24" />
+                          <stop offset="100%" stopColor="#f87171" />
+                        </linearGradient>
+                      </defs>
+                      <rect x="5" y={30 - (carrierAnalytics.activeRoutes > 0 ? 10 : 2)} width="12" height="28" fill="url(#routesTrendFill)" rx="2" />
+                      <rect x="22" y={30 - (carrierAnalytics.activeRoutes > 1 ? 15 : 2)} width="12" height="28" fill="url(#routesTrendFill)" rx="2" opacity="0.7" />
+                      <rect x="39" y={30 - (carrierAnalytics.activeRoutes > 2 ? 20 : 2)} width="12" height="28" fill="url(#routesTrendFill)" rx="2" opacity="0.5" />
+                      <rect x="56" y={30 - (carrierAnalytics.activeRoutes > 3 ? 18 : 2)} width="12" height="28" fill="url(#routesTrendFill)" rx="2" opacity="0.4" />
+                      <rect x="73" y={30 - (carrierAnalytics.activeRoutes > 4 ? 12 : 2)} width="12" height="28" fill="url(#routesTrendFill)" rx="2" opacity="0.3" />
+                    </svg>
+                  </div>
+                  <p className="mt-3 text-xs leading-5 text-slate-300">Number of shipments currently assigned to drivers.</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="carrier-premium-card rounded-[28px] p-6">
+              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Month Summary</p>
+              <div className="mt-6 space-y-3">
+                <div className="flex items-center justify-between rounded-[16px] border border-slate-200 bg-white/50 px-5 py-4">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-700">Total Revenue</p>
+                    <p className="mt-0.5 text-xs text-slate-600">Earnings from all completed shipments</p>
+                  </div>
+                  <p className="text-2xl font-bold text-emerald-600">{formatUsdCompact(carrierAnalytics.revenueThisMonth)}</p>
+                </div>
+                <div className="flex items-center justify-between rounded-[16px] border border-slate-200 bg-white/50 px-5 py-4">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-700">Completed Loads</p>
+                    <p className="mt-0.5 text-xs text-slate-600">Shipments delivered this month</p>
+                  </div>
+                  <p className="text-2xl font-bold text-emerald-600">{carrierAnalytics.loadsCompletedThisMonth}</p>
+                </div>
+                <div className="flex items-center justify-between rounded-[16px] border border-slate-200 bg-white/50 px-5 py-4">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-700">Fleet Efficiency</p>
+                    <p className="mt-0.5 text-xs text-slate-600">Percentage of drivers actively engaged</p>
+                  </div>
+                  <p className="text-2xl font-bold text-sky-600">{carrierAnalytics.driverUtilization}%</p>
+                </div>
+                <div className="flex items-center justify-between rounded-[16px] border border-slate-200 bg-white/50 px-5 py-4">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-700">Active Routes</p>
+                    <p className="mt-0.5 text-xs text-slate-600">Shipments currently in transit</p>
+                  </div>
+                  <p className="text-2xl font-bold text-amber-600">{carrierAnalytics.activeRoutes}</p>
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
+
         {isSubscriptionActive && activeTab === "queue" && (
-          <article className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
-            <div className="flex items-center justify-between">
-              <h2 className="text-xl font-semibold">Offer and Shipment Queue</h2>
+          <article className="carrier-premium-card carrier-fade-up rounded-[30px] p-6 md:p-7">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">Queue management</p>
+                <h2 className="mt-2 text-2xl font-semibold tracking-[-0.03em] text-slate-950">Offer and Shipment Queue</h2>
+              </div>
               <button
                 onClick={() => void loadShipments()}
-                className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
               >
                 {loading ? "Refreshing..." : "Refresh"}
               </button>
             </div>
 
-            <div className="mt-4 grid gap-4 rounded-lg bg-emerald-50 p-4 md:grid-cols-2">
-              <div>
+            <div className="mt-5 grid gap-4 md:grid-cols-2">
+              <div className="carrier-premium-card rounded-[24px] border border-emerald-200 bg-emerald-50/90 p-5">
                 <p className="text-xs uppercase tracking-wider text-emerald-700">Offers For You</p>
                 <p className="text-2xl font-semibold text-emerald-900">{offersForMe.length}</p>
               </div>
-              <div>
+              <div className="carrier-premium-card rounded-[24px] border border-sky-200 bg-sky-50/90 p-5">
                 <p className="text-xs uppercase tracking-wider text-emerald-700">Accepted By You</p>
                 <p className="text-2xl font-semibold text-emerald-900">{acceptedByMe.length}</p>
               </div>
@@ -2444,29 +2916,31 @@ export default function CarrierPortalPage() {
 
             <div className="mt-5 space-y-4">
               {queue.length === 0 && (
-                <p className="rounded-lg border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">
+                <p className="rounded-[24px] border border-dashed border-slate-300 bg-white/70 p-8 text-center text-sm text-slate-500">
                   No offers or shipments available.
                 </p>
               )}
 
               {queue.map((shipment) => (
-                <div key={shipment.id} className="rounded-xl border border-slate-200 p-4">
-                  <div className="flex flex-wrap items-start justify-between gap-2">
+                <div key={shipment.id} className="carrier-premium-card carrier-card-hover rounded-[28px] p-5 md:p-6">
+                  <div className="relative z-10">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
-                      <h3 className="font-semibold text-slate-900">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">{shipment.load_number}</p>
+                      <h3 className="mt-2 text-lg font-semibold tracking-[-0.02em] text-slate-950 md:text-xl">
                         {shipment.origin} to {shipment.destination}
                       </h3>
-                      <p className="text-sm text-slate-600">
+                      <p className="mt-2 text-sm leading-6 text-slate-600">
                         {shipment.client_name} • {shipment.cargo_type} • {toLbFromKg(shipment.weight_kg).toLocaleString()} lb ({shipment.weight_kg.toLocaleString()} kg) • {shipment.time_window}
                       </p>
                     </div>
-                    <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">
+                    <span className={`rounded-full px-3 py-1.5 text-xs font-semibold ${carrierShipmentStatusBadgeClass(shipment.status)}`}>
                       {statusLabel[shipment.status]}
                     </span>
                   </div>
 
                   {shipment.quote_breakdown && (
-                    <div className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
+                    <div className="mt-4 rounded-[20px] border border-amber-200/70 bg-[linear-gradient(180deg,rgba(255,251,235,0.95),rgba(254,243,199,0.55))] p-4 text-sm text-amber-900">
                       Estimate ${shipment.quote_breakdown.total_usd.toFixed(2)} • ETA {shipment.quote_breakdown.estimated_delivery_time}
                     </div>
                   )}
@@ -2752,6 +3226,7 @@ export default function CarrierPortalPage() {
                       </button>
                     </div>
                   )}
+                  </div>
                 </div>
               ))}
             </div>
