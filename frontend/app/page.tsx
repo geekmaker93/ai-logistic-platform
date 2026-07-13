@@ -10,7 +10,7 @@ import {
 } from "@/lib/auth-lite";
 import GlobeMarketJourneyBackground from "@/app/components/globe-market-journey-background";
 import LiveChatSupport from "@/app/components/live-chat-support";
-import { driverLogin, loginAccount, requestSignupVerificationCode, signupAccount } from "@/lib/logistics-api";
+import { AuthRole, driverLogin, loginAccount, requestPasswordReset, requestSignupVerificationCode, signupAccount } from "@/lib/logistics-api";
 import { trackEvent } from "@/lib/telemetry";
 
 const truckTypeOptions = [
@@ -26,7 +26,7 @@ const truckTypeOptions = [
 ] as const;
 
 type LoginRole = "client" | "carrier" | "driver";
-type LandingView = "landing" | "pricing" | "resources" | "about" | "login" | "signup" | "signup_verify";
+type LandingView = "landing" | "pricing" | "resources" | "about" | "login" | "signup" | "signup_verify" | "forgot_password";
 type PricingSubscription = "shipper" | "carrier";
 type ResourceSection = "events";
 
@@ -49,7 +49,7 @@ type SignupState = {
   role: "client" | "carrier";
 };
 
-type SubmitState = null | "login" | "signup" | "signup_code";
+type SubmitState = null | "login" | "signup" | "signup_code" | "forgot_password";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) {
@@ -140,7 +140,7 @@ function NavBrand(props: Readonly<{ isAboutView: boolean; onOpenLanding: () => v
       onClick={onOpenLanding}
       className={`cursor-pointer text-sm font-semibold tracking-wide transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70 ${isAboutView ? "text-slate-900 hover:text-slate-700" : "text-cyan-200 hover:text-cyan-100"}`}
     >
-      FreightAxis
+      LynkXpress
     </button>
   );
 }
@@ -158,7 +158,11 @@ function NavTabs(props: Readonly<{
     ? "text-slate-700 hover:border-slate-300 hover:bg-slate-100"
     : "text-slate-200 hover:border-cyan-300/40 hover:bg-cyan-500/10";
   const [pricingMenuOpen, setPricingMenuOpen] = useState(false);
+  const [resourcesMenuOpen, setResourcesMenuOpen] = useState(false);
+  const [supportMenuOpen, setSupportMenuOpen] = useState(false);
   const pricingMenuRef = useRef<HTMLDivElement | null>(null);
+  const resourcesMenuRef = useRef<HTMLDivElement | null>(null);
+  const supportMenuRef = useRef<HTMLDivElement | null>(null);
 
   function closePricingMenuIfOutside(target: EventTarget | null) {
     if (!pricingMenuRef.current || pricingMenuRef.current.contains(target as Node)) {
@@ -167,13 +171,41 @@ function NavTabs(props: Readonly<{
     setPricingMenuOpen(false);
   }
 
+  function closeResourcesMenuIfOutside(target: EventTarget | null) {
+    if (!resourcesMenuRef.current || resourcesMenuRef.current.contains(target as Node)) {
+      return;
+    }
+    setResourcesMenuOpen(false);
+  }
+
+  function closeSupportMenuIfOutside(target: EventTarget | null) {
+    if (!supportMenuRef.current || supportMenuRef.current.contains(target as Node)) {
+      return;
+    }
+    setSupportMenuOpen(false);
+  }
+
   useEffect(() => {
     function handlePricingMenuPointerDown(event: PointerEvent) {
       closePricingMenuIfOutside(event.target);
     }
 
+    function handleResourcesMenuPointerDown(event: PointerEvent) {
+      closeResourcesMenuIfOutside(event.target);
+    }
+
+    function handleSupportMenuPointerDown(event: PointerEvent) {
+      closeSupportMenuIfOutside(event.target);
+    }
+
     globalThis.document.addEventListener("pointerdown", handlePricingMenuPointerDown, true);
-    return () => globalThis.document.removeEventListener("pointerdown", handlePricingMenuPointerDown, true);
+    globalThis.document.addEventListener("pointerdown", handleResourcesMenuPointerDown, true);
+    globalThis.document.addEventListener("pointerdown", handleSupportMenuPointerDown, true);
+    return () => {
+      globalThis.document.removeEventListener("pointerdown", handlePricingMenuPointerDown, true);
+      globalThis.document.removeEventListener("pointerdown", handleResourcesMenuPointerDown, true);
+      globalThis.document.removeEventListener("pointerdown", handleSupportMenuPointerDown, true);
+    };
   }, []);
 
   return (
@@ -227,9 +259,90 @@ function NavTabs(props: Readonly<{
           </div>
         )}
       </div>
-      <button type="button" onClick={onOpenResources} className={`whitespace-nowrap rounded-full border border-transparent px-3 py-1.5 transition ${tabClass}`}>
-        Resources
-      </button>
+      <div className="relative" ref={resourcesMenuRef}>
+        <button
+          type="button"
+          onClick={() => {
+            setResourcesMenuOpen((prev) => !prev);
+          }}
+          onMouseEnter={() => setResourcesMenuOpen(true)}
+          className={`whitespace-nowrap rounded-full border border-transparent px-3 py-1.5 transition ${tabClass}`}
+        >
+          Resources
+        </button>
+
+        {resourcesMenuOpen && (
+          <div
+            role="menu"
+            tabIndex={-1}
+            aria-label="Resources options"
+            onMouseLeave={() => setResourcesMenuOpen(false)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                setResourcesMenuOpen(false);
+              }
+            }}
+            className={`absolute left-0 top-11 z-30 w-60 rounded-xl p-2 shadow-xl ${isAboutView ? "border border-slate-200 bg-white" : "border border-cyan-300/20 bg-[#041a34]"}`}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                onOpenResources();
+                setResourcesMenuOpen(false);
+              }}
+              className={`w-full rounded-lg px-3 py-2 text-left text-sm transition ${isAboutView ? "text-slate-800 hover:bg-slate-100" : "text-slate-100 hover:bg-cyan-500/20"}`}
+            >
+              Events
+            </button>
+          </div>
+        )}
+      </div>
+      <div className="relative" ref={supportMenuRef}>
+        <button
+          type="button"
+          onClick={() => {
+            setSupportMenuOpen((prev) => !prev);
+          }}
+          onMouseEnter={() => setSupportMenuOpen(true)}
+          className={`whitespace-nowrap rounded-full border border-transparent px-3 py-1.5 transition ${tabClass}`}
+        >
+          Support
+        </button>
+
+        {supportMenuOpen && (
+          <div
+            role="menu"
+            tabIndex={-1}
+            aria-label="Support options"
+            onMouseLeave={() => setSupportMenuOpen(false)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                setSupportMenuOpen(false);
+              }
+            }}
+            className={`absolute left-0 top-11 z-30 w-60 rounded-xl p-2 shadow-xl ${isAboutView ? "border border-slate-200 bg-white" : "border border-cyan-300/20 bg-[#041a34]"}`}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                setSupportMenuOpen(false);
+              }}
+              className={`w-full rounded-lg px-3 py-2 text-left text-sm transition ${isAboutView ? "text-slate-800 hover:bg-slate-100" : "text-slate-100 hover:bg-cyan-500/20"}`}
+            >
+              File a Claim
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSupportMenuOpen(false);
+              }}
+              className={`w-full rounded-lg px-3 py-2 text-left text-sm transition ${isAboutView ? "text-slate-800 hover:bg-slate-100" : "text-slate-100 hover:bg-cyan-500/20"}`}
+            >
+              Dispute a Charge
+            </button>
+          </div>
+        )}
+      </div>
       <button type="button" onClick={onOpenAbout} className={`whitespace-nowrap rounded-full border border-transparent px-3 py-1.5 transition ${tabClass}`}>
         About
       </button>
@@ -377,7 +490,7 @@ function LandingPanel(props: Readonly<{ message: string }>) {
   return (
     <>
       <p className="text-xs uppercase tracking-[0.22em] text-cyan-300">Intelligent Freight Network</p>
-      <h1 className="mt-3 text-3xl font-semibold text-white md:text-5xl">FreightAxis</h1>
+      <h1 className="mt-3 text-3xl font-semibold text-white md:text-5xl">LynkXpress</h1>
       <p className="mt-4 text-sm leading-6 text-slate-200 md:text-base">
         Digital freight coordination for shippers and carriers with route intelligence and real-time operations.
       </p>
@@ -437,50 +550,56 @@ function ResourcesPanel(props: Readonly<{ section: ResourceSection; onSelectSect
   const isEventsSelected = section === "events";
 
   return (
-    <div className="mt-8 space-y-8 text-slate-900 md:mt-10">
-      <div>
-        <p className="text-xs uppercase tracking-[0.22em] text-cyan-700">Resources</p>
-        <h2 className="mt-3 text-3xl font-semibold text-slate-950 md:text-5xl">Resource Center</h2>
-        <p className="mt-4 max-w-3xl text-sm leading-6 text-slate-700 md:text-base">Browse updates and announcements from FreightAxis.</p>
-      </div>
-
-      <div className="grid gap-6 lg:grid-cols-[0.38fr_0.62fr]">
-        <aside className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
-          <p className="text-xs font-bold uppercase tracking-[0.22em] text-slate-500">Events List</p>
-          <div className="mt-4 space-y-3">
-            <button
-              type="button"
-              onClick={() => onSelectSection("events")}
-              className={`w-full rounded-xl border px-4 py-3 text-left text-sm transition ${isEventsSelected ? "border-cyan-300 bg-white text-slate-900" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-100"}`}
-            >
-              AI Shipment System & Ship Manager Pro Released
-            </button>
+    <div
+      className="mt-8 overflow-hidden rounded-[32px] border border-cyan-200/60 text-white shadow-[0_24px_80px_rgba(8,15,35,0.25)] md:mt-10"
+      style={{ backgroundImage: "url('/events-background.png')", backgroundPosition: "center", backgroundSize: "cover" }}
+    >
+      <div className="bg-slate-950/72 px-5 py-6 md:px-8 md:py-8">
+        <div className="space-y-8">
+          <div>
+            <h2 className="mt-3 text-3xl font-semibold text-white md:text-5xl">Events</h2>
+            <p className="mt-4 max-w-3xl text-sm leading-6 text-slate-200 md:text-base">Browse updates and announcements from LynkXpress.</p>
           </div>
-        </aside>
 
-        <article className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm md:p-8">
-          <h3 className="text-2xl font-bold text-slate-950">AI Shipment System & Ship Manager Pro Released</h3>
-          <p className="mt-4 text-sm leading-7 text-slate-700 md:text-base">
-            FreightAxis has officially launched its new AI-powered shipment software alongside <strong className="font-semibold text-slate-950">Ship Manager Pro</strong>, a major upgrade to its core logistics operations system.
-          </p>
-          <p className="mt-4 text-sm leading-7 text-slate-700 md:text-base">
-            The AI Shipment System introduces intelligent shipment processing, helping optimize load creation, carrier selection, and workflow efficiency across the platform. It is designed to reduce manual decision-making and improve overall operational speed through structured automation and data-driven logic.
-          </p>
-          <p className="mt-4 text-sm leading-7 text-slate-700 md:text-base">
-            <strong className="font-semibold text-slate-950">Ship Manager Pro</strong> enhances shipment control and visibility for shippers, providing a centralized dashboard to manage active loads, monitor real-time status updates, assign carriers, and oversee end-to-end delivery performance within a single interface.
-          </p>
-          <p className="mt-4 text-sm leading-7 text-slate-700 md:text-base">
-            Together, these systems mark a significant step toward a more intelligent and fully integrated freight management ecosystem within FreightAxis.
-          </p>
-          <div className="mt-6 space-y-1 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-            <p>
-              <strong className="font-semibold text-slate-900">Released:</strong> June 2026
-            </p>
-            <p>
-              <strong className="font-semibold text-slate-900">Status:</strong> Active across platform users
-            </p>
+          <div className="grid gap-6 lg:grid-cols-[0.38fr_0.62fr]">
+            <aside className="rounded-3xl border border-white/12 bg-white/10 p-5 backdrop-blur-sm">
+              <p className="text-xs font-bold uppercase tracking-[0.22em] text-cyan-100/80">Events List</p>
+              <div className="mt-4 space-y-3">
+                <button
+                  type="button"
+                  onClick={() => onSelectSection("events")}
+                  className={`w-full rounded-xl border px-4 py-3 text-left text-sm transition ${isEventsSelected ? "border-cyan-300 bg-white text-slate-950" : "border-white/15 bg-slate-950/35 text-slate-100 hover:bg-white/12"}`}
+                >
+                  AI Shipment System & Ship Manager Pro Released
+                </button>
+              </div>
+            </aside>
+
+            <article className="rounded-3xl border border-white/12 bg-slate-950/50 p-6 shadow-sm backdrop-blur-sm md:p-8">
+              <h3 className="text-2xl font-bold text-white">AI Shipment System & Ship Manager Pro Released</h3>
+              <p className="mt-4 text-sm leading-7 text-slate-200 md:text-base">
+                LynkXpress has officially launched its new AI-powered shipment software alongside <strong className="font-semibold text-white">Ship Manager Pro</strong>, a major upgrade to its core logistics operations system.
+              </p>
+              <p className="mt-4 text-sm leading-7 text-slate-200 md:text-base">
+                The AI Shipment System introduces intelligent shipment processing, helping optimize load creation, carrier selection, and workflow efficiency across the platform. It is designed to reduce manual decision-making and improve overall operational speed through structured automation and data-driven logic.
+              </p>
+              <p className="mt-4 text-sm leading-7 text-slate-200 md:text-base">
+                <strong className="font-semibold text-white">Ship Manager Pro</strong> enhances shipment control and visibility for shippers, providing a centralized dashboard to manage active loads, monitor real-time status updates, assign carriers, and oversee end-to-end delivery performance within a single interface.
+              </p>
+              <p className="mt-4 text-sm leading-7 text-slate-200 md:text-base">
+                Together, these systems mark a significant step toward a more intelligent and fully integrated freight management ecosystem within LynkXpress.
+              </p>
+              <div className="mt-6 space-y-1 rounded-2xl border border-white/12 bg-white/10 p-4 text-sm text-slate-100">
+                <p>
+                  <strong className="font-semibold text-white">Released:</strong> June 2026
+                </p>
+                <p>
+                  <strong className="font-semibold text-white">Status:</strong> Active across platform users
+                </p>
+              </div>
+            </article>
           </div>
-        </article>
+        </div>
       </div>
     </div>
   );
@@ -512,7 +631,7 @@ function AboutPanel(props: Readonly<{ onBackToHome: () => void }>) {
             Built to connect shippers, carriers, and drivers in one streamlined system.
           </h2>
           <p className={`max-w-4xl text-base leading-8 md:text-lg ${styles.copy}`}>
-            <strong className="font-semibold text-slate-950">FreightAxis</strong> is a technology-driven logistics platform built to connect shippers, carriers, and drivers through a single, streamlined ecosystem. Our mission is to simplify freight transportation by eliminating inefficiencies, reducing manual processes, and providing greater visibility throughout the shipment lifecycle.
+            <strong className="font-semibold text-slate-950">LynkXpress</strong> is a technology-driven logistics platform built to connect shippers, carriers, and drivers through a single, streamlined ecosystem. Our mission is to simplify freight transportation by eliminating inefficiencies, reducing manual processes, and providing greater visibility throughout the shipment lifecycle.
           </p>
           <p className={`max-w-4xl text-base leading-8 md:text-lg ${styles.copy}`}>
             Our platform enables businesses to create shipments, connect with qualified carriers, assign drivers, monitor shipment progress, upload proof-of-delivery documents, and process payments securely-all within one centralized system.
@@ -643,9 +762,10 @@ function LoginPanel(props: Readonly<{
   onTogglePassword: () => void;
   onLogin: () => void;
   onBack: () => void;
+  onForgotPassword: () => void;
   onSetRole: (role: LoginRole) => void;
 }>) {
-  const { loginForm, showLoginPassword, submitting, onLoginFormChange, onTogglePassword, onLogin, onBack, onSetRole } = props;
+  const { loginForm, showLoginPassword, submitting, onLoginFormChange, onTogglePassword, onLogin, onBack, onForgotPassword, onSetRole } = props;
 
   return (
     <div className="mt-6 space-y-4">
@@ -707,8 +827,47 @@ function LoginPanel(props: Readonly<{
         <button onClick={onLogin} disabled={submitting === "login"} className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-[#031227] hover:bg-slate-100">
           {submitting === "login" ? "Signing In..." : "Continue to Dashboard"}
         </button>
+        {loginForm.role !== "driver" && (
+          <button onClick={onForgotPassword} className="rounded-xl border border-slate-500 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10">
+            Forgot password
+          </button>
+        )}
         <button onClick={onBack} className="rounded-xl border border-slate-500 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10">
           Back
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ForgotPasswordPanel(props: Readonly<{
+  email: string;
+  submitting: SubmitState;
+  onEmailChange: (value: string) => void;
+  onSubmit: () => void;
+  onBack: () => void;
+}>) {
+  const { email, submitting, onEmailChange, onSubmit, onBack } = props;
+
+  return (
+    <div className="mt-6 space-y-4">
+      <p className="text-xs uppercase tracking-wider text-slate-300">Reset Password</p>
+      <p className="text-sm text-slate-200">
+        Enter the email address associated with your account. We will send password reset instructions if the account exists.
+      </p>
+      <input
+        type="email"
+        value={email}
+        onChange={(event) => onEmailChange(event.target.value)}
+        placeholder="Email"
+        className="w-full rounded-xl border border-slate-600 bg-[#061B34] px-4 py-3 text-sm text-white outline-none ring-cyan-300 placeholder:text-slate-400 focus:ring-2"
+      />
+      <div className="flex flex-wrap gap-3">
+        <button onClick={onSubmit} disabled={submitting === "forgot_password"} className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-[#031227] hover:bg-slate-100 disabled:opacity-60">
+          {submitting === "forgot_password" ? "Sending..." : "Send Reset Link"}
+        </button>
+        <button onClick={onBack} className="rounded-xl border border-slate-500 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10">
+          Back to Login
         </button>
       </div>
     </div>
@@ -906,6 +1065,10 @@ function PageShell(props: Readonly<{
   onSignOut: () => void;
   onToggleShowLoginPassword: () => void;
   onLogin: () => void;
+  onForgotPassword: () => void;
+  onSubmitForgotPassword: () => void;
+  onEmailChange: (value: string) => void;
+  onBackToLogin: () => void;
   onLoginFormChange: (updater: (prev: LoginState) => LoginState) => void;
   onSignupFormChange: (updater: (prev: SignupState) => SignupState) => void;
   onToggleVehicleType: (value: string) => void;
@@ -943,6 +1106,10 @@ function PageShell(props: Readonly<{
     onSignOut,
     onToggleShowLoginPassword,
     onLogin,
+    onForgotPassword,
+    onSubmitForgotPassword,
+    onEmailChange,
+    onBackToLogin,
     onLoginFormChange,
     onSignupFormChange,
     onToggleVehicleType,
@@ -1004,7 +1171,17 @@ function PageShell(props: Readonly<{
             onTogglePassword={onToggleShowLoginPassword}
             onLogin={onLogin}
             onBack={onBackToLanding}
+            onForgotPassword={onForgotPassword}
             onSetRole={onOpenRoleLogin}
+          />
+        )}
+        {view === "forgot_password" && (
+          <ForgotPasswordPanel
+            email={loginForm.email}
+            submitting={submitting}
+            onEmailChange={onEmailChange}
+            onSubmit={onSubmitForgotPassword}
+            onBack={onBackToLogin}
           />
         )}
         {view === "signup" && (
@@ -1173,6 +1350,39 @@ export default function Home() {
     globalThis.document.addEventListener("click", handleDocumentClick);
     return () => globalThis.document.removeEventListener("click", handleDocumentClick);
   }, []);
+
+  function forgotPassword() {
+    if (loginForm.role === "driver") {
+      return;
+    }
+    setMessage("");
+    setView("forgot_password");
+  }
+
+  async function submitForgotPassword() {
+    const email = loginForm.email.trim().toLowerCase();
+    if (!email) {
+      setMessage("Enter your email address to reset your password.");
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setMessage("Enter a valid email address.");
+      return;
+    }
+
+    const role: AuthRole = loginForm.role === "driver" ? "client" : loginForm.role;
+
+    setSubmitting("forgot_password");
+    try {
+      await requestPasswordReset({ email, role });
+      setMessage("If an account exists for that email, reset instructions have been sent.");
+      setView("login");
+    } catch (error: unknown) {
+      setMessage(getErrorMessage(error));
+    } finally {
+      setSubmitting(null);
+    }
+  }
 
   async function login() {
     try {
@@ -1361,6 +1571,10 @@ export default function Home() {
         onSignOut={signOut}
         onToggleShowLoginPassword={() => setShowLoginPassword((prev) => !prev)}
         onLogin={login}
+        onForgotPassword={forgotPassword}
+        onSubmitForgotPassword={submitForgotPassword}
+        onEmailChange={(value) => setLoginForm((prev) => ({ ...prev, email: value }))}
+        onBackToLogin={() => setView("login")}
         onLoginFormChange={setLoginForm}
         onSignupFormChange={setSignupForm}
         onToggleVehicleType={toggleSignupCarrierVehicleType}

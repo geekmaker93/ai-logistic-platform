@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AI Logistics Platform",
+  title: "LynkXpress",
   description: "AI-powered logistics workflow platform",
 };
 

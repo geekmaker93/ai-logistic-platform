@@ -1796,10 +1796,10 @@ export default function ClientPortalPage() {
                 Dispatch, pay, and track freight from one polished command center.
               </h1>
               <p className="mt-4 max-w-3xl text-base leading-7 text-slate-200 md:text-lg">
-                Access the FreightAxis network to create shipment requests, compare carrier offers, release payments, and monitor live movement with a dashboard that feels client-ready instead of back-office.
+                Access the LynkXpress network to create shipment requests, compare carrier offers, release payments, and monitor live movement with a dashboard that feels client-ready instead of back-office.
               </p>
               <div className="mt-6 flex flex-wrap gap-3 text-sm text-white/90">
-                <div className="rounded-full border border-white/12 bg-white/10 px-4 py-2">{profile?.company_name || session?.displayName || "FreightAxis shipper account"}</div>
+                <div className="rounded-full border border-white/12 bg-white/10 px-4 py-2">{profile?.company_name || session?.displayName || "LynkXpress shipper account"}</div>
                 <div className="rounded-full border border-white/12 bg-white/10 px-4 py-2">{dashboardStats.total} total shipments</div>
                 <div className="rounded-full border border-white/12 bg-white/10 px-4 py-2">{formatUsdCompact(dashboardRevenue)} quoted volume</div>
               </div>
