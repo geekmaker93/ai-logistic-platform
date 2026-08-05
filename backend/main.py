@@ -2043,9 +2043,9 @@ def ensure_signup_uniqueness(
 	normalized_tax_id: str,
 	normalized_dot_number: str,
 ) -> None:
-	existing = db.scalar(select(UserModel).where(UserModel.email == email, UserModel.role == role))
+	existing = db.scalar(select(UserModel).where(UserModel.email == email))
 	if existing is not None:
-		raise HTTPException(status_code=409, detail="An account already exists for this email and role.")
+		raise HTTPException(status_code=409, detail="An account already exists for this email. Sign in instead.")
 
 	if not is_carrier:
 		return
@@ -3647,6 +3647,10 @@ def start_didit_session(payload: DiditSessionRequest, request: Request) -> Didit
 		raise HTTPException(status_code=400, detail="Enter a valid email address.")
 	if len(full_name.split()) < 2:
 		raise HTTPException(status_code=400, detail="Enter your first and last name before identity verification.")
+	with get_session() as db:
+		existing_user = db.scalar(select(UserModel).where(UserModel.email == email))
+		if existing_user is not None:
+			raise HTTPException(status_code=409, detail="An account already exists for this email. Sign in instead.")
 	callback = f"{resolve_frontend_base_url(request.headers.get('origin')).rstrip('/')}/"
 	return create_didit_session(full_name=full_name, email=email, role=payload.role, callback=callback)
 
@@ -3659,9 +3663,9 @@ def request_signup_verification_code(payload: AuthSignupVerificationCodeRequest)
 
 	role = payload.role
 	with get_session() as db:
-		existing_user = db.scalar(select(UserModel).where(UserModel.email == email, UserModel.role == role))
+		existing_user = db.scalar(select(UserModel).where(UserModel.email == email))
 		if existing_user is not None:
-			raise HTTPException(status_code=409, detail="An account already exists for this email and role.")
+			raise HTTPException(status_code=409, detail="An account already exists for this email. Sign in instead.")
 
 	code = generate_signup_verification_code()
 	try:

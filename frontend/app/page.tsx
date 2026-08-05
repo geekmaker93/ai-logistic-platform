@@ -1647,8 +1647,9 @@ export default function Home() {
       });
 
       trackEvent("auth.sign_up", { role: account.role, displayName: account.company_name });
-      setMessage("");
-      setView("signup_submitted");
+    setLoginForm({ email: account.email, password: "", role: account.role });
+    setMessage("Application submitted for review. Sign in after your account is activated.");
+    setView("login");
     } catch (error: unknown) {
       setMessage(getErrorMessage(error));
     } finally {
