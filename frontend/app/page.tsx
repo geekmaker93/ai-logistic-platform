@@ -12,7 +12,7 @@ import {
 } from "@/lib/auth-lite";
 import GlobeMarketJourneyBackground from "@/app/components/globe-market-journey-background";
 import LiveChatSupport from "@/app/components/live-chat-support";
-import { AuthRole, createDiditSession, driverLogin, loginAccount, requestPasswordReset, requestSignupVerificationCode, signupAccount, verifySignupEmailCode } from "@/lib/logistics-api";
+import { AuthRole, confirmDiditSession, createDiditSession, driverLogin, loginAccount, requestPasswordReset, requestSignupVerificationCode, signupAccount, verifySignupEmailCode } from "@/lib/logistics-api";
 import { trackEvent } from "@/lib/telemetry";
 
 const truckTypeOptions = [
@@ -1407,7 +1407,6 @@ export default function Home() {
   useEffect(() => {
     const params = new URLSearchParams(globalThis.window.location.search);
     const sessionId = params.get("verificationSessionId");
-    const status = params.get("status");
     if (!sessionId) {
       return;
     }
@@ -1417,9 +1416,18 @@ export default function Home() {
       if (savedSignup) {
         try {
           const savedForm = JSON.parse(savedSignup) as SignupState;
-          setSignupForm({ ...savedForm, diditSessionId: sessionId });
-          setView("signup_profile");
-          setMessage(status === "Approved" ? "Identity verification complete. Continue with your role-specific profile." : "Identity verification was submitted. Account creation will continue once Didit approves it.");
+          void confirmDiditSession({ session_id: sessionId, email: savedForm.email, role: savedForm.role })
+            .then(() => {
+              setSignupForm({ ...savedForm, diditSessionId: sessionId });
+              globalThis.window.sessionStorage.removeItem("freightaxis.didit.signup");
+              setView("signup_profile");
+              setMessage("Identity verification approved. Continue with your role-specific profile.");
+            })
+            .catch(() => {
+              setSignupForm({ ...savedForm, diditSessionId: "" });
+              setView("signup_identity");
+              setMessage("Didit is still finalizing your verification. Complete the verification and try again in a moment.");
+            });
         } catch {
           setMessage("Identity verification returned, but your signup details could not be restored. Please start again.");
         }

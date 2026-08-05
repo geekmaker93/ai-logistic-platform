@@ -399,6 +399,12 @@ class DiditSessionResponse(BaseModel):
 	url: str
 
 
+class DiditSessionConfirmationRequest(BaseModel):
+	session_id: str = Field(min_length=8, max_length=120)
+	email: str = Field(min_length=4, max_length=320)
+	role: Literal["client", "carrier", "driver"]
+
+
 class AuthSignupVerificationCodeRequest(BaseModel):
 	email: str = Field(min_length=4, max_length=320)
 	role: Literal["client", "carrier", "driver"]
@@ -3653,6 +3659,15 @@ def start_didit_session(payload: DiditSessionRequest, request: Request) -> Didit
 			raise HTTPException(status_code=409, detail="An account already exists for this email. Sign in instead.")
 	callback = f"{resolve_frontend_base_url(request.headers.get('origin')).rstrip('/')}/"
 	return create_didit_session(full_name=full_name, email=email, role=payload.role, callback=callback)
+
+
+@app.post("/auth/identity-verification/confirm-didit-session")
+def confirm_didit_session(payload: DiditSessionConfirmationRequest) -> dict[str, str]:
+	email = normalize_email(payload.email)
+	if not is_valid_email(email):
+		raise HTTPException(status_code=400, detail="Enter a valid email address.")
+	verify_didit_session(payload.session_id, email=email, role=payload.role)
+	return {"detail": "Identity verification approved."}
 
 
 @app.post("/auth/signup/request-verification-code", response_model=AuthSignupVerificationCodeResponse)

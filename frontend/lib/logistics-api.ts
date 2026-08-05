@@ -494,6 +494,13 @@ export function createDiditSession(payload: { full_name: string; email: string; 
   });
 }
 
+export function confirmDiditSession(payload: { session_id: string; email: string; role: AuthRole }) {
+  return request<{ detail: string }>("/auth/identity-verification/confirm-didit-session", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export function requestSignupVerificationCode(payload: { email: string; role: AuthRole }) {
   return request<{ detail: string }> ("/auth/signup/request-verification-code", {
     method: "POST",
