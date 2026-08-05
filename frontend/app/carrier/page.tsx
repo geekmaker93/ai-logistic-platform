@@ -55,6 +55,11 @@ import {
 } from "@/lib/logistics-api";
 import { AuthLiteSession, clearAuthLiteSession, getAuthLiteSession, setAuthLiteSession } from "@/lib/auth-lite";
 import { trackEvent } from "@/lib/telemetry";
+import {
+  loadDriverProfilesFromStorage,
+  searchDriversNearZip,
+  type DriverProfile,
+} from "@/lib/driver-discovery";
 
 const LiveTrackingMap = dynamic(() => import("@/app/components/live-tracking-map"), {
   ssr: false,
@@ -148,6 +153,16 @@ function trendToneClass(deltaPct: number): string {
     return "border border-emerald-200 bg-emerald-50 text-emerald-700";
   }
   return "border border-rose-200 bg-rose-50 text-rose-700";
+}
+
+function driverAvailabilityBadgeClass(availability: DriverProfile["availability"]): string {
+  if (availability === "available") {
+    return "border border-emerald-200 bg-emerald-50 text-emerald-700";
+  }
+  if (availability === "busy") {
+    return "border border-amber-200 bg-amber-50 text-amber-700";
+  }
+  return "border border-slate-200 bg-slate-100 text-slate-700";
 }
 
 function MetricSparkline(props: Readonly<{ values: number[]; stroke: string; fillId: string; label: string }>) {
@@ -924,6 +939,14 @@ export default function CarrierPortalPage() {
   const [driverDocuments, setDriverDocuments] = useState<DriverDocumentRecord[]>([]);
   const [driverOpsLoading, setDriverOpsLoading] = useState(false);
   const [latestGeneratedDriverToken, setLatestGeneratedDriverToken] = useState<string>("");
+  const [driverDiscoveryZip, setDriverDiscoveryZip] = useState("10001");
+  const [driverDiscoveryRadius, setDriverDiscoveryRadius] = useState(150);
+  const [driverDiscoveryResults, setDriverDiscoveryResults] = useState<DriverProfile[]>(() => searchDriversNearZip("10001", 150, loadDriverProfilesFromStorage()));
+  const [selectedDiscoveryDriver, setSelectedDiscoveryDriver] = useState<DriverProfile | null>(() => {
+    const initialMatches = searchDriversNearZip("10001", 150, loadDriverProfilesFromStorage());
+    return initialMatches[0] ?? null;
+  });
+  const [driverDiscoveryLoading, setDriverDiscoveryLoading] = useState(false);
   const [liveTrackingRows, setLiveTrackingRows] = useState<CarrierLiveTrackingItem[]>([]);
   const [selectedTrackingShipmentId, setSelectedTrackingShipmentId] = useState<string>("");
   const [liveTrackingLoading, setLiveTrackingLoading] = useState(false);
@@ -1027,6 +1050,24 @@ export default function CarrierPortalPage() {
       setLoading(false);
     }
   }, [session]);
+
+  function handleSearchNearbyDrivers() {
+    const zipCode = driverDiscoveryZip.trim();
+    if (!zipCode) {
+      setMessage("Enter a ZIP code to find nearby drivers.");
+      return;
+    }
+
+    setDriverDiscoveryLoading(true);
+    try {
+      const nextResults = searchDriversNearZip(zipCode, driverDiscoveryRadius, loadDriverProfilesFromStorage());
+      setDriverDiscoveryResults(nextResults);
+      setSelectedDiscoveryDriver(nextResults[0] ?? null);
+      setMessage(`Found ${nextResults.length} nearby driver${nextResults.length === 1 ? "" : "s"}.`);
+    } finally {
+      setDriverDiscoveryLoading(false);
+    }
+  }
 
   const loadDriverData = useCallback(async (email: string) => {
     setDriverOpsLoading(true);
@@ -3903,6 +3944,15 @@ export default function CarrierPortalPage() {
                         {doc.content_text}
                       </pre>
                     )}
+                    {doc.file_base64 && (
+                      <a
+                        href={`data:${doc.file_mime_type || "application/octet-stream"};base64,${doc.file_base64}`}
+                        download={doc.document_name}
+                        className="mt-3 inline-flex rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-white"
+                      >
+                        Download document
+                      </a>
+                    )}
                   </div>
                 ))}
               </div>
@@ -4081,6 +4131,120 @@ export default function CarrierPortalPage() {
 
         {isSubscriptionActive && activeTab === "drivers" && (
           <section className="space-y-6">
+            <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-xl font-semibold">Find a Driver</h2>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Enter a ZIP code to rank nearby drivers by location, availability, and delivery performance.
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-3 md:grid-cols-[1.2fr_0.7fr_auto]">
+                <input
+                  value={driverDiscoveryZip}
+                  onChange={(event) => setDriverDiscoveryZip(event.target.value)}
+                  placeholder="ZIP code"
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 outline-none focus:border-emerald-700"
+                />
+                <select
+                  value={driverDiscoveryRadius}
+                  onChange={(event) => setDriverDiscoveryRadius(Number(event.target.value))}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 outline-none focus:border-emerald-700"
+                >
+                  <option value={75}>75 mi</option>
+                  <option value={150}>150 mi</option>
+                  <option value={250}>250 mi</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={handleSearchNearbyDrivers}
+                  disabled={driverDiscoveryLoading}
+                  className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600 disabled:opacity-60"
+                >
+                  {driverDiscoveryLoading ? "Searching..." : "Search Drivers"}
+                </button>
+              </div>
+
+              <div className="mt-5 grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+                <div className="space-y-3">
+                  {driverDiscoveryResults.length === 0 && (
+                    <div className="rounded-xl border border-dashed border-slate-300 p-4 text-sm text-slate-500">
+                      No nearby driver profiles are available yet. Drivers can complete their profile from the driver portal to appear here.
+                    </div>
+                  )}
+                  {driverDiscoveryResults.map((driver) => (
+                    <button
+                      key={driver.id}
+                      type="button"
+                      onClick={() => setSelectedDiscoveryDriver(driver)}
+                      className={`w-full rounded-xl border p-4 text-left transition ${selectedDiscoveryDriver?.id === driver.id ? "border-emerald-500 bg-emerald-50" : "border-slate-200 bg-white hover:bg-slate-50"}`}
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">{driver.first_name} {driver.last_name}</p>
+                          <p className="mt-1 text-xs text-slate-500">{driver.city}, {driver.state} • {driver.equipment}</p>
+                        </div>
+                        <span className={`rounded-full px-3 py-1 text-xs font-semibold ${driverAvailabilityBadgeClass(driver.availability)}`}>
+                          {driver.availability === "available" && "Available"}
+                          {driver.availability === "busy" && "Busy"}
+                          {driver.availability === "unavailable" && "Unavailable"}
+                        </span>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-3 text-xs text-slate-500">
+                        <span>{driver.cdl_class}</span>
+                        <span>{driver.experience_years} yrs</span>
+                        <span>{driver.rating.toFixed(1)} ★</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  {selectedDiscoveryDriver ? (
+                    <div className="space-y-4">
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Driver profile</p>
+                        <h3 className="mt-1 text-lg font-semibold text-slate-900">{selectedDiscoveryDriver.first_name} {selectedDiscoveryDriver.last_name}</h3>
+                        <p className="mt-1 text-sm text-slate-600">{selectedDiscoveryDriver.address} • {selectedDiscoveryDriver.city}, {selectedDiscoveryDriver.state} {selectedDiscoveryDriver.zip_code}</p>
+                      </div>
+                      <div className="rounded-xl border border-slate-200 bg-white p-3 text-sm text-slate-600">
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-slate-900">Availability</span>
+                          <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${driverAvailabilityBadgeClass(selectedDiscoveryDriver.availability)}`}>
+                            {selectedDiscoveryDriver.availability === "available" && "Available"}
+                            {selectedDiscoveryDriver.availability === "busy" && "Busy"}
+                            {selectedDiscoveryDriver.availability === "unavailable" && "Unavailable"}
+                          </span>
+                        </div>
+                        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                          <p><span className="font-semibold text-slate-700">Equipment:</span> {selectedDiscoveryDriver.equipment}</p>
+                          <p><span className="font-semibold text-slate-700">Capacity:</span> {selectedDiscoveryDriver.capacity}</p>
+                          <p><span className="font-semibold text-slate-700">CDL:</span> {selectedDiscoveryDriver.cdl_class}</p>
+                          <p><span className="font-semibold text-slate-700">Radius:</span> {selectedDiscoveryDriver.operating_radius_miles} mi</p>
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-sm font-semibold text-slate-900">Qualifications</p>
+                        <p className="mt-1 text-sm text-slate-600">{selectedDiscoveryDriver.qualifications.join(", ")}</p>
+                      </div>
+                      <div>
+                        <p className="text-sm font-semibold text-slate-900">Performance</p>
+                        <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-600">
+                          <span className="rounded-full bg-white px-2.5 py-1">{selectedDiscoveryDriver.completed_loads} loads</span>
+                          <span className="rounded-full bg-white px-2.5 py-1">{selectedDiscoveryDriver.on_time_delivery_pct}% on time</span>
+                          <span className="rounded-full bg-white px-2.5 py-1">{selectedDiscoveryDriver.rating.toFixed(1)} ★ rating</span>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-slate-500">Select a driver to review their profile and equipment fit.</p>
+                  )}
+                </div>
+              </div>
+            </div>
+
             <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>

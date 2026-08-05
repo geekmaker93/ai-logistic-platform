@@ -1,16 +1,18 @@
 ﻿"use client";
 
+import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import {
   clearAuthLiteSession,
   clearDriverPortalSession,
   getAuthLiteSession,
+  getDriverPortalSession,
   setAuthLiteSession,
   setDriverPortalSession,
 } from "@/lib/auth-lite";
 import GlobeMarketJourneyBackground from "@/app/components/globe-market-journey-background";
 import LiveChatSupport from "@/app/components/live-chat-support";
-import { AuthRole, driverLogin, loginAccount, requestPasswordReset, requestSignupVerificationCode, signupAccount } from "@/lib/logistics-api";
+import { AuthRole, createDiditSession, driverLogin, loginAccount, requestPasswordReset, requestSignupVerificationCode, signupAccount, verifySignupEmailCode } from "@/lib/logistics-api";
 import { trackEvent } from "@/lib/telemetry";
 
 const truckTypeOptions = [
@@ -25,9 +27,8 @@ const truckTypeOptions = [
   { value: "hotshot", label: "Hotshot" },
 ] as const;
 
-type LoginRole = "client" | "carrier" | "driver";
-type LandingView = "landing" | "pricing" | "resources" | "about" | "login" | "signup" | "signup_verify" | "forgot_password";
-type PricingSubscription = "shipper" | "carrier";
+type LoginRole = "client" | "carrier" | "driver_token" | "driver";
+type LandingView = "landing" | "pricing" | "resources" | "about" | "login" | "signup_role" | "signup" | "signup_verify" | "signup_identity" | "signup_profile" | "signup_review" | "signup_submitted" | "forgot_password";
 type ResourceSection = "events";
 
 type LoginState = {
@@ -42,14 +43,21 @@ type SignupState = {
   taxId: string;
   dotNumber: string;
   vehicleTypes: string[];
+  phone: string;
+  profileNotes: string;
   email: string;
   password: string;
   confirmPassword: string;
   emailVerificationCode: string;
-  role: "client" | "carrier";
+  diditSessionId: string;
+  diditConsent: boolean;
+  idDocumentName: string;
+  idDocumentMimeType: string;
+  idDocumentBase64: string;
+  role: "client" | "carrier" | "driver";
 };
 
-type SubmitState = null | "login" | "signup" | "signup_code" | "forgot_password";
+type SubmitState = null | "login" | "signup" | "signup_code" | "forgot_password" | "didit";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) {
@@ -62,8 +70,9 @@ function getSignupValidationMessage(params: {
   form: SignupState;
   normalizedTaxId: string;
   normalizedDotNumber: string;
+  requireIdentity?: boolean;
 }): string | null {
-  const { form, normalizedTaxId, normalizedDotNumber } = params;
+  const { form, normalizedTaxId, normalizedDotNumber, requireIdentity = true } = params;
   const fullName = form.fullName.trim();
   const companyName = form.companyName.trim();
   const email = form.email.trim().toLowerCase();
@@ -71,8 +80,8 @@ function getSignupValidationMessage(params: {
   const isCarrier = form.role === "carrier";
 
   if (!fullName || !companyName || !email || !password) return "Complete all sign-up fields.";
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return "Enter a valid email address.";
-  if (password.length < 8 || !/[A-Za-z]/.test(password) || !/\d/.test(password)) {
+  if (!isValidEmailAddress(email)) return "Enter a valid email address.";
+  if (!isStrongPassword(password)) {
     return "Password must be at least 8 characters and include letters and numbers.";
   }
   if (password !== form.confirmPassword) return "Passwords do not match.";
@@ -84,8 +93,50 @@ function getSignupValidationMessage(params: {
   if (isCarrier && !/^[1-9]\d{5,7}$/.test(normalizedDotNumber)) {
     return "Enter a valid USDOT number (6 to 8 digits, numbers only).";
   }
+  if (requireIdentity && !form.diditSessionId) {
+    return "Complete identity verification to continue.";
+  }
 
   return null;
+}
+
+function SignupRolePanel(props: Readonly<{ role: AuthRole; onSelectRole: (role: AuthRole) => void; onContinue: () => void; onBack: () => void }>) {
+  const { role, onSelectRole, onContinue, onBack } = props;
+  return (
+    <div className="mt-6 space-y-4">
+      <p className="text-xs uppercase tracking-wider text-slate-300">1. Select Account Type</p>
+      <div className="grid gap-3 sm:grid-cols-3">
+        {(["client", "carrier", "driver"] as const).map((accountRole) => (
+          <button key={accountRole} type="button" onClick={() => onSelectRole(accountRole)} className={`rounded-xl px-4 py-4 text-sm font-semibold transition ${role === accountRole ? "bg-cyan-500 text-[#031227]" : "border border-slate-600 bg-[#061B34] text-slate-200 hover:bg-[#0A2648]"}`}>
+            {accountRole === "client" ? "Shipper" : accountRole[0].toUpperCase() + accountRole.slice(1)}
+          </button>
+        ))}
+      </div>
+      <button type="button" onClick={onContinue} className="rounded-xl bg-cyan-500 px-4 py-3 text-sm font-semibold text-[#031227] hover:bg-cyan-400">Continue</button>
+      <button type="button" onClick={onBack} className="ml-3 rounded-xl border border-slate-500 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10">Back</button>
+    </div>
+  );
+}
+
+function SignupIdentityPanel(props: Readonly<{ signupForm: SignupState; submitting: SubmitState; onSignupFormChange: (updater: (prev: SignupState) => SignupState) => void; onStart: () => void; onBack: () => void }>) {
+  const { signupForm, submitting, onSignupFormChange, onStart, onBack } = props;
+  return <div className="mt-6 space-y-4"><p className="text-xs uppercase tracking-wider text-slate-300">4. Identity Verification</p><DiditIdentityVerification role={signupForm.role} sessionId={signupForm.diditSessionId} consent={signupForm.diditConsent} submitting={submitting} onConsentChange={(diditConsent) => onSignupFormChange((prev) => ({ ...prev, diditConsent }))} onStart={onStart} /><button type="button" onClick={onBack} className="rounded-xl border border-slate-500 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10">Back</button></div>;
+}
+
+function SignupProfilePanel(props: Readonly<{ signupForm: SignupState; onSignupFormChange: (updater: (prev: SignupState) => SignupState) => void; onToggleVehicleType: (value: string) => void; onContinue: () => void; onBack: () => void }>) {
+  const { signupForm, onSignupFormChange, onToggleVehicleType, onContinue, onBack } = props;
+  const notesLabel = signupForm.role === "driver" ? "Driving experience and equipment" : signupForm.role === "client" ? "Freight or shipping needs" : "Operating notes";
+  return <div className="mt-6 space-y-4"><p className="text-xs uppercase tracking-wider text-slate-300">5. Role-Specific Profile</p><input value={signupForm.phone} onChange={(event) => onSignupFormChange((prev) => ({ ...prev, phone: event.target.value }))} placeholder="Contact phone" type="tel" className="w-full rounded-xl border border-slate-600 bg-[#061B34] px-4 py-3 text-sm text-white outline-none ring-cyan-300 placeholder:text-slate-400 focus:ring-2" />{signupForm.role === "carrier" ? <div className="rounded-xl border border-slate-600 bg-[#061B34] p-3"><p className="mb-2 text-sm font-semibold text-white">Fleet equipment</p><div className="grid grid-cols-1 gap-2 sm:grid-cols-2">{truckTypeOptions.map((option) => <label key={option.value} className="flex items-center gap-2 text-sm text-slate-100"><input type="checkbox" checked={signupForm.vehicleTypes.includes(option.value)} onChange={() => onToggleVehicleType(option.value)} className="h-4 w-4 rounded border-slate-500 text-emerald-500" /><span>{option.label}</span></label>)}</div></div> : <textarea value={signupForm.profileNotes} onChange={(event) => onSignupFormChange((prev) => ({ ...prev, profileNotes: event.target.value }))} placeholder={notesLabel} maxLength={400} rows={4} className="w-full resize-y rounded-xl border border-slate-600 bg-[#061B34] px-4 py-3 text-sm text-white outline-none ring-cyan-300 placeholder:text-slate-400 focus:ring-2" />}<button type="button" onClick={onContinue} className="rounded-xl bg-cyan-500 px-4 py-3 text-sm font-semibold text-[#031227] hover:bg-cyan-400">Review Application</button><button type="button" onClick={onBack} className="ml-3 rounded-xl border border-slate-500 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10">Back</button></div>;
+}
+
+function SignupReviewPanel(props: Readonly<{ signupForm: SignupState; submitting: SubmitState; onSubmit: () => void; onBack: () => void }>) {
+  const { signupForm, submitting, onSubmit, onBack } = props;
+  return <div className="mt-6 space-y-4"><p className="text-xs uppercase tracking-wider text-slate-300">6. Review / Approval</p><div className="rounded-xl border border-slate-600 bg-[#061B34] p-4 text-sm text-slate-200"><p className="font-semibold text-white">{signupForm.companyName}</p><p>{signupForm.fullName}</p><p>{signupForm.email.trim().toLowerCase()}</p><p className="mt-3 text-cyan-200">Email and identity verification are complete. Submit your application for activation.</p></div><button type="button" onClick={onSubmit} disabled={submitting !== null} className="rounded-xl bg-cyan-500 px-4 py-3 text-sm font-semibold text-[#031227] hover:bg-cyan-400 disabled:opacity-60">{submitting === "signup" ? "Submitting..." : "Submit for Approval"}</button><button type="button" onClick={onBack} disabled={submitting !== null} className="ml-3 rounded-xl border border-slate-500 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10">Back</button></div>;
+}
+
+function SignupSubmittedPanel(props: Readonly<{ onBackToLogin: () => void }>) {
+  const { onBackToLogin } = props;
+  return <div className="mt-6 space-y-4"><p className="text-xs uppercase tracking-wider text-slate-300">7. Account Activation</p><div className="rounded-xl border border-cyan-300/40 bg-cyan-500/10 p-4 text-sm text-cyan-50"><p className="font-semibold text-white">Application submitted for review</p><p className="mt-2">Your account will be activated after approval. You can sign in once activation is complete.</p></div><button type="button" onClick={onBackToLogin} className="rounded-xl bg-cyan-500 px-4 py-3 text-sm font-semibold text-[#031227] hover:bg-cyan-400">Back to Login</button></div>;
 }
 
 function getAboutStyles() {
@@ -107,28 +158,66 @@ function getLoginRoleClass(role: LoginRole, selected: boolean): string {
 
   if (role === "client") return "bg-indigo-500 text-white";
   if (role === "carrier") return "bg-emerald-500 text-white";
-  return "bg-amber-500 text-white";
+  if (role === "driver_token") return "bg-amber-500 text-white";
+  return "bg-orange-600 text-white";
 }
 
 function getLoginRoleLabel(role: LoginRole): string {
   if (role === "client") return "Shipper";
   if (role === "carrier") return "Carrier";
-  return "Driver";
+  if (role === "driver_token") return "Token Login";
+  return "Driver Login";
 }
 
 function resolveDashboardPath(role: LoginRole): string {
   if (role === "carrier") return "/carrier";
-  if (role === "driver") return "/driver";
+  if (role === "driver_token") return "/driver";
+  if (role === "driver") return "/driver-application";
   return "/client";
 }
 
-function navigateToDashboard(role: LoginRole): void {
-  globalThis.window.location.assign(resolveDashboardPath(role));
+function resolveProfilePath(role: LoginRole): string {
+  if (role === "driver_token") return "/driver";
+  if (role === "driver") return "/driver-application";
+  return `${resolveDashboardPath(role)}?account=profile`;
 }
 
-function resolveProfilePath(role: LoginRole): string {
-  if (role === "driver") return "/driver";
-  return `${resolveDashboardPath(role)}?account=profile`;
+function isValidEmailAddress(email: string): boolean {
+  const atIndex = email.indexOf("@");
+  if (atIndex <= 0 || atIndex !== email.lastIndexOf("@")) {
+    return false;
+  }
+
+  const localPart = email.slice(0, atIndex);
+  const domainPart = email.slice(atIndex + 1);
+  if (!localPart || !domainPart || domainPart.startsWith(".") || domainPart.endsWith(".")) {
+    return false;
+  }
+
+  return domainPart.includes(".") && !email.includes(" ");
+}
+
+function isStrongPassword(password: string): boolean {
+  let hasLetter = false;
+  let hasNumber = false;
+
+  for (const character of password) {
+    if (character >= "0" && character <= "9") {
+      hasNumber = true;
+    } else if ((character >= "A" && character <= "Z") || (character >= "a" && character <= "z")) {
+      hasLetter = true;
+    }
+
+    if (hasLetter && hasNumber) {
+      return password.length >= 8;
+    }
+  }
+
+  return false;
+}
+
+function isSixDigitCode(value: string): boolean {
+  return value.length === 6 && [...value].every((character) => character >= "0" && character <= "9");
 }
 
 function NavBrand(props: Readonly<{ isAboutView: boolean; onOpenLanding: () => void }>) {
@@ -148,28 +237,17 @@ function NavBrand(props: Readonly<{ isAboutView: boolean; onOpenLanding: () => v
 function NavTabs(props: Readonly<{
   isAboutView: boolean;
   onOpenPricing: () => void;
-  onOpenShipperSubscription: () => void;
-  onOpenCarrierSubscription: () => void;
   onOpenResources: () => void;
   onOpenAbout: () => void;
 }>) {
-  const { isAboutView, onOpenPricing, onOpenShipperSubscription, onOpenCarrierSubscription, onOpenResources, onOpenAbout } = props;
+  const { isAboutView, onOpenPricing, onOpenResources, onOpenAbout } = props;
   const tabClass = isAboutView
     ? "text-slate-700 hover:border-slate-300 hover:bg-slate-100"
     : "text-slate-200 hover:border-cyan-300/40 hover:bg-cyan-500/10";
-  const [pricingMenuOpen, setPricingMenuOpen] = useState(false);
   const [resourcesMenuOpen, setResourcesMenuOpen] = useState(false);
   const [supportMenuOpen, setSupportMenuOpen] = useState(false);
-  const pricingMenuRef = useRef<HTMLDivElement | null>(null);
   const resourcesMenuRef = useRef<HTMLDivElement | null>(null);
   const supportMenuRef = useRef<HTMLDivElement | null>(null);
-
-  function closePricingMenuIfOutside(target: EventTarget | null) {
-    if (!pricingMenuRef.current || pricingMenuRef.current.contains(target as Node)) {
-      return;
-    }
-    setPricingMenuOpen(false);
-  }
 
   function closeResourcesMenuIfOutside(target: EventTarget | null) {
     if (!resourcesMenuRef.current || resourcesMenuRef.current.contains(target as Node)) {
@@ -186,10 +264,6 @@ function NavTabs(props: Readonly<{
   }
 
   useEffect(() => {
-    function handlePricingMenuPointerDown(event: PointerEvent) {
-      closePricingMenuIfOutside(event.target);
-    }
-
     function handleResourcesMenuPointerDown(event: PointerEvent) {
       closeResourcesMenuIfOutside(event.target);
     }
@@ -198,11 +272,9 @@ function NavTabs(props: Readonly<{
       closeSupportMenuIfOutside(event.target);
     }
 
-    globalThis.document.addEventListener("pointerdown", handlePricingMenuPointerDown, true);
     globalThis.document.addEventListener("pointerdown", handleResourcesMenuPointerDown, true);
     globalThis.document.addEventListener("pointerdown", handleSupportMenuPointerDown, true);
     return () => {
-      globalThis.document.removeEventListener("pointerdown", handlePricingMenuPointerDown, true);
       globalThis.document.removeEventListener("pointerdown", handleResourcesMenuPointerDown, true);
       globalThis.document.removeEventListener("pointerdown", handleSupportMenuPointerDown, true);
     };
@@ -210,55 +282,9 @@ function NavTabs(props: Readonly<{
 
   return (
     <div className="order-3 flex w-full gap-2 overflow-x-auto pb-1 text-sm md:order-2 md:ml-8 md:w-auto md:overflow-visible md:pb-0">
-      <div className="relative" ref={pricingMenuRef}>
-        <button
-          type="button"
-          onClick={() => {
-            onOpenPricing();
-            setPricingMenuOpen((prev) => !prev);
-          }}
-          onMouseEnter={() => setPricingMenuOpen(true)}
-          className={`whitespace-nowrap rounded-full border border-transparent px-3 py-1.5 transition ${tabClass}`}
-        >
-          Pricing
-        </button>
-
-        {pricingMenuOpen && (
-          <div
-            role="menu"
-            tabIndex={-1}
-            aria-label="Pricing options"
-            onMouseLeave={() => setPricingMenuOpen(false)}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                setPricingMenuOpen(false);
-              }
-            }}
-            className={`absolute left-0 top-11 z-30 w-60 rounded-xl p-2 shadow-xl ${isAboutView ? "border border-slate-200 bg-white" : "border border-cyan-300/20 bg-[#041a34]"}`}
-          >
-            <button
-              type="button"
-              onClick={() => {
-                onOpenShipperSubscription();
-                setPricingMenuOpen(false);
-              }}
-              className={`w-full rounded-lg px-3 py-2 text-left text-sm transition ${isAboutView ? "text-slate-800 hover:bg-slate-100" : "text-slate-100 hover:bg-cyan-500/20"}`}
-            >
-              Shipper Subscription
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                onOpenCarrierSubscription();
-                setPricingMenuOpen(false);
-              }}
-              className={`w-full rounded-lg px-3 py-2 text-left text-sm transition ${isAboutView ? "text-slate-800 hover:bg-slate-100" : "text-slate-100 hover:bg-cyan-500/20"}`}
-            >
-              Carrier Subscription
-            </button>
-          </div>
-        )}
-      </div>
+      <button type="button" onClick={onOpenPricing} className={`whitespace-nowrap rounded-full border border-transparent px-3 py-1.5 transition ${tabClass}`}>
+        Pricing
+      </button>
       <div className="relative" ref={resourcesMenuRef}>
         <button
           type="button"
@@ -405,6 +431,9 @@ function SignedOutControls(props: Readonly<{
           <button type="button" onClick={() => onOpenRoleLogin("carrier")} className={`w-full rounded-lg px-3 py-2 text-left text-sm transition ${isAboutView ? "text-slate-800 hover:bg-slate-100" : "text-slate-100 hover:bg-cyan-500/20"}`}>
             Carrier Login
           </button>
+          <button type="button" onClick={() => onOpenRoleLogin("driver_token")} className={`w-full rounded-lg px-3 py-2 text-left text-sm transition ${isAboutView ? "text-slate-800 hover:bg-slate-100" : "text-slate-100 hover:bg-cyan-500/20"}`}>
+            Token Login
+          </button>
           <button type="button" onClick={() => onOpenRoleLogin("driver")} className={`w-full rounded-lg px-3 py-2 text-left text-sm transition ${isAboutView ? "text-slate-800 hover:bg-slate-100" : "text-slate-100 hover:bg-cyan-500/20"}`}>
             Driver Login
           </button>
@@ -425,8 +454,6 @@ function TopNavigation(props: Readonly<{
   loginMenuRef: React.RefObject<HTMLDivElement | null>;
   onOpenLanding: () => void;
   onOpenPricing: () => void;
-  onOpenShipperSubscription: () => void;
-  onOpenCarrierSubscription: () => void;
   onOpenResources: () => void;
   onOpenAbout: () => void;
   onToggleLoginMenu: () => void;
@@ -442,8 +469,6 @@ function TopNavigation(props: Readonly<{
     loginMenuRef,
     onOpenLanding,
     onOpenPricing,
-    onOpenShipperSubscription,
-    onOpenCarrierSubscription,
     onOpenResources,
     onOpenAbout,
     onToggleLoginMenu,
@@ -462,8 +487,6 @@ function TopNavigation(props: Readonly<{
         <NavTabs
           isAboutView={isAboutView}
           onOpenPricing={onOpenPricing}
-          onOpenShipperSubscription={onOpenShipperSubscription}
-          onOpenCarrierSubscription={onOpenCarrierSubscription}
           onOpenResources={onOpenResources}
           onOpenAbout={onOpenAbout}
         />
@@ -503,43 +526,47 @@ function LandingPanel(props: Readonly<{ message: string }>) {
   );
 }
 
-function PricingPanel(props: Readonly<{ activeSubscription: PricingSubscription; onSelectSubscription: (subscription: PricingSubscription) => void }>) {
-  const { activeSubscription, onSelectSubscription } = props;
-
+function PricingPanel() {
   return (
     <div className="mt-8 space-y-8 text-slate-900 md:mt-10">
-      <div>
+      <div className="space-y-3">
         <p className="text-xs uppercase tracking-[0.22em] text-cyan-700">Pricing</p>
-        <h2 className="mt-3 text-3xl font-semibold text-slate-950 md:text-5xl">Subscription Models</h2>
-        <p className="mt-4 max-w-3xl text-sm leading-6 text-slate-700 md:text-base">
-          Choose the model that matches how your team operates.
+        <h2 className="text-3xl font-semibold text-slate-950 md:text-5xl">Subscription Models</h2>
+        <p className="max-w-3xl text-sm leading-6 text-slate-700 md:text-base">
+          Choose the subscription that matches how your team operates.
         </p>
       </div>
 
-      <div className="space-y-4">
-        <div id="shipper-subscription" className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
-          <button type="button" onClick={() => onSelectSubscription("shipper")} className="w-full text-left">
-            <span className="text-xs font-bold uppercase tracking-[0.24em] text-cyan-700">Shipper Subscription</span>
-            <span className="mt-2 block text-xl font-semibold text-slate-950">Built for teams that move freight every day</span>
-          </button>
-          {activeSubscription === "shipper" && (
-            <p className="mt-3 text-sm leading-6 text-slate-700">
-              Tools for shipment creation, carrier selection, status visibility, and payment handling in one workflow.
-            </p>
-          )}
-        </div>
+      <div className="grid gap-6 md:grid-cols-2">
+        <article id="shipper-subscription" className="rounded-3xl border border-cyan-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
+          <p className="text-xs font-bold uppercase tracking-[0.24em] text-cyan-700">Shipper Subscription</p>
+          <h3 className="mt-3 text-2xl font-semibold text-slate-950">Built for teams that move freight every day</h3>
+          <p className="mt-3 text-sm leading-6 text-slate-700">
+            Tools to create shipments, choose carriers, and keep every load visible from pickup through delivery.
+          </p>
+          <ul className="mt-5 space-y-3 text-sm leading-6 text-slate-700">
+            <li className="flex gap-3"><span className="mt-2 h-2 w-2 rounded-full bg-cyan-500" />Create and manage shipment requests</li>
+            <li className="flex gap-3"><span className="mt-2 h-2 w-2 rounded-full bg-cyan-500" />Compare carrier offers in one view</li>
+            <li className="flex gap-3"><span className="mt-2 h-2 w-2 rounded-full bg-cyan-500" />Track status updates and live movement</li>
+            <li className="flex gap-3"><span className="mt-2 h-2 w-2 rounded-full bg-cyan-500" />Release payments and manage billing flow</li>
+            <li className="flex gap-3"><span className="mt-2 h-2 w-2 rounded-full bg-cyan-500" />Monitor delivery performance in one dashboard</li>
+          </ul>
+        </article>
 
-        <div id="carrier-subscriptions" className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
-          <button type="button" onClick={() => onSelectSubscription("carrier")} className="w-full text-left">
-            <span className="text-xs font-bold uppercase tracking-[0.24em] text-cyan-700">Carrier Subscriptions</span>
-            <span className="mt-2 block text-xl font-semibold text-slate-950">Designed for carriers that want steady load access</span>
-          </button>
-          {activeSubscription === "carrier" && (
-            <p className="mt-3 text-sm leading-6 text-slate-700">
-              Access to available shipments, driver coordination, real-time updates, and a streamlined operating experience.
-            </p>
-          )}
-        </div>
+        <article id="carrier-subscription" className="rounded-3xl border border-cyan-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
+          <p className="text-xs font-bold uppercase tracking-[0.24em] text-cyan-700">Carrier Subscription</p>
+          <h3 className="mt-3 text-2xl font-semibold text-slate-950">Designed for carriers that want steady load access</h3>
+          <p className="mt-3 text-sm leading-6 text-slate-700">
+            Access available loads, coordinate drivers, and manage your operation with faster updates and less manual work.
+          </p>
+          <ul className="mt-5 space-y-3 text-sm leading-6 text-slate-700">
+            <li className="flex gap-3"><span className="mt-2 h-2 w-2 rounded-full bg-cyan-500" />Browse available shipments and lane opportunities</li>
+            <li className="flex gap-3"><span className="mt-2 h-2 w-2 rounded-full bg-cyan-500" />Submit and manage carrier offers</li>
+            <li className="flex gap-3"><span className="mt-2 h-2 w-2 rounded-full bg-cyan-500" />Coordinate driver updates in real time</li>
+            <li className="flex gap-3"><span className="mt-2 h-2 w-2 rounded-full bg-cyan-500" />Keep shipment status and delivery info in sync</li>
+            <li className="flex gap-3"><span className="mt-2 h-2 w-2 rounded-full bg-cyan-500" />Streamline your day with a single operating dashboard</li>
+          </ul>
+        </article>
       </div>
     </div>
   );
@@ -710,7 +737,7 @@ function AboutPanel(props: Readonly<{ onBackToHome: () => void }>) {
             {[
               "Shipment Management",
               "Carrier Network Access",
-              "Driver Portal Access",
+              "Drive Portal Access",
               "Real-Time Tracking",
               "Digital Proof of Delivery",
               "Secure Payment Processing",
@@ -770,7 +797,7 @@ function LoginPanel(props: Readonly<{
   return (
     <div className="mt-6 space-y-4">
       <p className="text-xs uppercase tracking-wider text-slate-300">Login</p>
-      {loginForm.role !== "driver" && (
+      {loginForm.role !== "driver_token" && (
         <input
           type="email"
           value={loginForm.email}
@@ -785,7 +812,7 @@ function LoginPanel(props: Readonly<{
           type={showLoginPassword ? "text" : "password"}
           value={loginForm.password}
           onChange={(event) => onLoginFormChange((prev) => ({ ...prev, password: event.target.value }))}
-          placeholder={loginForm.role === "driver" ? "Driver token" : "Password"}
+          placeholder={loginForm.role === "driver_token" ? "Driver token" : "Password"}
           className="w-full rounded-xl border border-slate-600 bg-[#061B34] px-4 py-3 pr-20 text-sm text-white outline-none ring-cyan-300 placeholder:text-slate-400 focus:ring-2"
         />
         <button
@@ -811,10 +838,11 @@ function LoginPanel(props: Readonly<{
       </div>
 
       <p className="text-xs uppercase tracking-wider text-slate-300">Login As</p>
-      <div className="grid gap-3 sm:grid-cols-3">
-        {(["client", "carrier", "driver"] as LoginRole[]).map((role) => (
+      <div className="grid gap-3 sm:grid-cols-4">
+        {(["client", "carrier", "driver_token", "driver"] as LoginRole[]).map((role) => (
           <button
             key={role}
+            type="button"
             onClick={() => onSetRole(role)}
             className={`rounded-xl px-4 py-3 text-sm font-semibold transition ${getLoginRoleClass(role, loginForm.role === role)}`}
           >
@@ -824,15 +852,15 @@ function LoginPanel(props: Readonly<{
       </div>
 
       <div className="flex flex-wrap gap-3">
-        <button onClick={onLogin} disabled={submitting === "login"} className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-[#031227] hover:bg-slate-100">
+        <button type="button" onClick={onLogin} disabled={submitting === "login"} className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-[#031227] hover:bg-slate-100">
           {submitting === "login" ? "Signing In..." : "Continue to Dashboard"}
         </button>
-        {loginForm.role !== "driver" && (
-          <button onClick={onForgotPassword} className="rounded-xl border border-slate-500 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10">
+        {loginForm.role !== "driver_token" && (
+          <button type="button" onClick={onForgotPassword} className="rounded-xl border border-slate-500 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10">
             Forgot password
           </button>
         )}
-        <button onClick={onBack} className="rounded-xl border border-slate-500 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10">
+        <button type="button" onClick={onBack} className="rounded-xl border border-slate-500 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10">
           Back
         </button>
       </div>
@@ -863,13 +891,69 @@ function ForgotPasswordPanel(props: Readonly<{
         className="w-full rounded-xl border border-slate-600 bg-[#061B34] px-4 py-3 text-sm text-white outline-none ring-cyan-300 placeholder:text-slate-400 focus:ring-2"
       />
       <div className="flex flex-wrap gap-3">
-        <button onClick={onSubmit} disabled={submitting === "forgot_password"} className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-[#031227] hover:bg-slate-100 disabled:opacity-60">
+        <button type="button" onClick={onSubmit} disabled={submitting === "forgot_password"} className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-[#031227] hover:bg-slate-100 disabled:opacity-60">
           {submitting === "forgot_password" ? "Sending..." : "Send Reset Link"}
         </button>
-        <button onClick={onBack} className="rounded-xl border border-slate-500 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10">
+        <button type="button" onClick={onBack} className="rounded-xl border border-slate-500 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10">
           Back to Login
         </button>
       </div>
+    </div>
+  );
+}
+
+function DiditIdentityVerification(props: Readonly<{
+  role: AuthRole;
+  sessionId: string;
+  consent: boolean;
+  submitting: SubmitState;
+  onConsentChange: (consent: boolean) => void;
+  onStart: () => void;
+}>) {
+  const { role, sessionId, consent, submitting, onConsentChange, onStart } = props;
+  const isCarrier = role === "carrier";
+  const isClient = role === "client";
+  let label = "Driver";
+  let containerClass = "rounded-xl border border-amber-300/30 bg-amber-500/10 p-3";
+  let headingClass = "text-sm font-semibold text-amber-100";
+  let actionClass = "mt-3 rounded-lg border border-amber-300/40 px-3 py-2 text-sm font-semibold text-amber-100 hover:bg-amber-500/15 disabled:opacity-60";
+  let statusClass = "mt-2 text-xs text-amber-100";
+  if (isCarrier) {
+    label = "Carrier";
+    containerClass = "rounded-xl border border-cyan-300/30 bg-cyan-500/10 p-3";
+    headingClass = "text-sm font-semibold text-cyan-100";
+    actionClass = "mt-3 rounded-lg border border-cyan-300/40 px-3 py-2 text-sm font-semibold text-cyan-100 hover:bg-cyan-500/15 disabled:opacity-60";
+    statusClass = "mt-2 text-xs text-cyan-100";
+  } else if (isClient) {
+    label = "Shipper";
+    containerClass = "rounded-xl border border-indigo-300/30 bg-indigo-500/10 p-3";
+    headingClass = "text-sm font-semibold text-indigo-100";
+    actionClass = "mt-3 rounded-lg border border-indigo-300/40 px-3 py-2 text-sm font-semibold text-indigo-100 hover:bg-indigo-500/15 disabled:opacity-60";
+    statusClass = "mt-2 text-xs text-indigo-100";
+  }
+  let buttonLabel = "Verify identity";
+  let statusMessage = "Identity verification is required before creating this account.";
+  if (sessionId) {
+    buttonLabel = "Verification complete";
+    statusMessage = "Identity verification is complete.";
+  } else if (submitting === "didit") {
+    buttonLabel = "Opening verification...";
+  }
+
+  return (
+    <div className={containerClass}>
+      <p className={headingClass}>{label} identity verification</p>
+      <p className="mt-1 text-xs leading-5 text-slate-300">Verify your government-issued ID securely with Didit.</p>
+      {!sessionId && (
+        <label className="mt-3 flex items-start gap-2 text-xs leading-5 text-slate-200">
+          <input type="checkbox" checked={consent} onChange={(event) => onConsentChange(event.target.checked)} className="mt-1 h-4 w-4 rounded border-slate-500 text-cyan-500 focus:ring-cyan-500" />
+          <span>I consent to Didit processing my identity document and biometric data to verify my identity.</span>
+        </label>
+      )}
+      <button type="button" onClick={onStart} disabled={submitting !== null} className={actionClass}>
+        {buttonLabel}
+      </button>
+      <p className={statusClass}>{statusMessage}</p>
     </div>
   );
 }
@@ -878,11 +962,10 @@ function SignupPanel(props: Readonly<{
   signupForm: SignupState;
   submitting: SubmitState;
   onSignupFormChange: (updater: (prev: SignupState) => SignupState) => void;
-  onToggleVehicleType: (value: string) => void;
   onContinue: () => void;
   onBack: () => void;
 }>) {
-  const { signupForm, submitting, onSignupFormChange, onToggleVehicleType, onContinue, onBack } = props;
+  const { signupForm, submitting, onSignupFormChange, onContinue, onBack } = props;
 
   return (
     <div className="mt-6 space-y-4">
@@ -914,23 +997,6 @@ function SignupPanel(props: Readonly<{
             placeholder="USDOT number"
             className="w-full rounded-xl border border-slate-600 bg-[#061B34] px-4 py-3 text-sm text-white outline-none ring-cyan-300 placeholder:text-slate-400 focus:ring-2"
           />
-          <div className="rounded-xl border border-slate-600 bg-[#061B34] p-3">
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-300">Truck Types</p>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {truckTypeOptions.map((option) => (
-                <label key={option.value} className="flex items-center gap-2 rounded px-2 py-1 text-sm text-slate-100 hover:bg-[#0A2648]">
-                  <input
-                    type="checkbox"
-                    checked={signupForm.vehicleTypes.includes(option.value)}
-                    onChange={() => onToggleVehicleType(option.value)}
-                    className="h-4 w-4 rounded border-slate-500 text-emerald-500 focus:ring-emerald-500"
-                  />
-                  <span>{option.label}</span>
-                </label>
-              ))}
-            </div>
-            <p className="mt-2 text-xs text-slate-300">Select one or more truck types for your carrier profile.</p>
-          </div>
         </>
       )}
 
@@ -958,27 +1024,11 @@ function SignupPanel(props: Readonly<{
         />
       </div>
 
-      <p className="text-xs uppercase tracking-wider text-slate-300">Sign Up As</p>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <button
-          onClick={() => onSignupFormChange((prev) => ({ ...prev, role: "client" }))}
-          className={`rounded-xl px-4 py-3 text-sm font-semibold transition ${signupForm.role === "client" ? "bg-indigo-500 text-white" : "border border-slate-600 bg-[#061B34] text-slate-200 hover:bg-[#0A2648]"}`}
-        >
-          Shipper
-        </button>
-        <button
-          onClick={() => onSignupFormChange((prev) => ({ ...prev, role: "carrier" }))}
-          className={`rounded-xl px-4 py-3 text-sm font-semibold transition ${signupForm.role === "carrier" ? "bg-emerald-500 text-white" : "border border-slate-600 bg-[#061B34] text-slate-200 hover:bg-[#0A2648]"}`}
-        >
-          Carrier
-        </button>
-      </div>
-
-      <button onClick={onContinue} disabled={submitting !== null} className="rounded-xl bg-cyan-500 px-4 py-3 text-sm font-semibold text-[#031227] hover:bg-cyan-400 disabled:opacity-60">
-        {submitting === "signup_code" ? "Sending Code..." : "Continue"}
+      <button type="button" onClick={onContinue} disabled={submitting !== null} className="rounded-xl bg-cyan-500 px-4 py-3 text-sm font-semibold text-[#031227] hover:bg-cyan-400 disabled:opacity-60">
+        {submitting === "signup_code" ? "Sending Code..." : "Next"}
       </button>
 
-      <button onClick={onBack} className="rounded-xl border border-slate-500 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10">
+      <button type="button" onClick={onBack} className="rounded-xl border border-slate-500 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10">
         Back
       </button>
     </div>
@@ -988,17 +1038,16 @@ function SignupPanel(props: Readonly<{
 function SignupVerificationPanel(props: Readonly<{
   signupForm: SignupState;
   submitting: SubmitState;
-  debugCode: string | null;
   onSignupFormChange: (updater: (prev: SignupState) => SignupState) => void;
   onVerify: () => void;
   onSendCode: () => void;
   onBackToForm: () => void;
 }>) {
-  const { signupForm, submitting, debugCode, onSignupFormChange, onVerify, onSendCode, onBackToForm } = props;
+  const { signupForm, submitting, onSignupFormChange, onVerify, onSendCode, onBackToForm } = props;
 
   return (
     <div className="mt-6 space-y-4">
-      <p className="text-xs uppercase tracking-wider text-slate-300">Verify Email</p>
+      <p className="text-xs uppercase tracking-wider text-slate-300">3. Email 2FA</p>
       <p className="text-sm text-slate-200">
         Enter the 6-digit code sent to <span className="font-semibold text-cyan-200">{signupForm.email.trim().toLowerCase()}</span>.
       </p>
@@ -1012,26 +1061,21 @@ function SignupVerificationPanel(props: Readonly<{
       <p className="text-sm text-slate-300">
         Verify your email to continue. Click the button below to send a 6-digit code, then enter it here.
       </p>
-      {debugCode && (
-        <div className="rounded-xl border border-cyan-300/40 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-100">
-          <p className="font-semibold">Local test code</p>
-          <p className="mt-1 text-lg font-mono tracking-[0.3em] text-cyan-50">{debugCode}</p>
-        </div>
-      )}
 
-      <button onClick={onVerify} disabled={submitting !== null} className="rounded-xl bg-cyan-500 px-4 py-3 text-sm font-semibold text-[#031227] hover:bg-cyan-400 disabled:opacity-60">
-        {submitting === "signup" ? "Verifying..." : "Verify & Create Account"}
+      <button type="button" onClick={onVerify} disabled={submitting !== null} className="rounded-xl bg-cyan-500 px-4 py-3 text-sm font-semibold text-[#031227] hover:bg-cyan-400 disabled:opacity-60">
+        {submitting === "signup" ? "Verifying..." : "Verify & Continue"}
       </button>
 
       <div className="flex flex-wrap gap-3">
         <button
+          type="button"
           onClick={onSendCode}
           disabled={submitting !== null}
           className="rounded-xl border border-cyan-400/60 px-4 py-3 text-sm font-semibold text-cyan-100 hover:bg-cyan-500/15 disabled:opacity-60"
         >
           {submitting === "signup_code" ? "Sending..." : "Send Code"}
         </button>
-        <button onClick={onBackToForm} disabled={submitting !== null} className="rounded-xl border border-slate-500 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10 disabled:opacity-60">
+        <button type="button" onClick={onBackToForm} disabled={submitting !== null} className="rounded-xl border border-slate-500 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10 disabled:opacity-60">
           Back to Form
         </button>
       </div>
@@ -1049,13 +1093,10 @@ function PageShell(props: Readonly<{
   showLoginPassword: boolean;
   loginForm: LoginState;
   signupForm: SignupState;
-  pricingSubscription: PricingSubscription;
   resourceSection: ResourceSection;
   submitting: SubmitState;
   onOpenLanding: () => void;
   onOpenPricing: () => void;
-  onOpenShipperSubscription: () => void;
-  onOpenCarrierSubscription: () => void;
   onOpenResources: () => void;
   onOpenAbout: () => void;
   onToggleLoginMenu: () => void;
@@ -1073,12 +1114,18 @@ function PageShell(props: Readonly<{
   onSignupFormChange: (updater: (prev: SignupState) => SignupState) => void;
   onToggleVehicleType: (value: string) => void;
   onRequestSignupCode: () => void;
+  onBackToRoleSelection: () => void;
   onBackToSignupForm: () => void;
-  signupDebugCode: string | null;
-  onSelectPricingSubscription: (subscription: PricingSubscription) => void;
+  onBackToSignupVerification: () => void;
+  onBackToSignupIdentity: () => void;
+  onBackToSignupProfile: () => void;
   onSelectResourceSection: (section: ResourceSection) => void;
   onSignup: () => void;
+  onStartDiditVerification: () => void;
   onBeginSignupVerification: () => void;
+  onContinueRoleSelection: () => void;
+  onVerifySignupEmail: () => void;
+  onContinueSignupProfile: () => void;
   onBackToLanding: () => void;
 }>) {
   const {
@@ -1091,13 +1138,10 @@ function PageShell(props: Readonly<{
     showLoginPassword,
     loginForm,
     signupForm,
-    pricingSubscription,
     resourceSection,
     submitting,
     onOpenLanding,
     onOpenPricing,
-    onOpenShipperSubscription,
-    onOpenCarrierSubscription,
     onOpenResources,
     onOpenAbout,
     onToggleLoginMenu,
@@ -1114,12 +1158,18 @@ function PageShell(props: Readonly<{
     onSignupFormChange,
     onToggleVehicleType,
     onRequestSignupCode,
+    onBackToRoleSelection,
     onBackToSignupForm,
-    signupDebugCode,
-    onSelectPricingSubscription,
+    onBackToSignupVerification,
+    onBackToSignupIdentity,
+    onBackToSignupProfile,
     onSelectResourceSection,
     onSignup,
+    onStartDiditVerification,
     onBeginSignupVerification,
+    onContinueRoleSelection,
+    onVerifySignupEmail,
+    onContinueSignupProfile,
     onBackToLanding,
   } = props;
 
@@ -1144,7 +1194,7 @@ function PageShell(props: Readonly<{
   } else if (view === "pricing") {
     content = (
       <section className="w-full max-w-5xl rounded-3xl border border-slate-300 bg-slate-100 p-7 text-slate-900 shadow-[0_20px_80px_rgba(0,0,0,0.12)] md:p-9">
-        <PricingPanel activeSubscription={pricingSubscription} onSelectSubscription={onSelectPricingSubscription} />
+        <PricingPanel />
       </section>
     );
   } else if (view === "resources") {
@@ -1170,7 +1220,7 @@ function PageShell(props: Readonly<{
             onLoginFormChange={onLoginFormChange}
             onTogglePassword={onToggleShowLoginPassword}
             onLogin={onLogin}
-            onBack={onBackToLanding}
+            onBack={onBackToRoleSelection}
             onForgotPassword={onForgotPassword}
             onSetRole={onOpenRoleLogin}
           />
@@ -1184,12 +1234,12 @@ function PageShell(props: Readonly<{
             onBack={onBackToLogin}
           />
         )}
+        {view === "signup_role" && <SignupRolePanel role={signupForm.role} onSelectRole={(role) => onSignupFormChange((prev) => ({ ...prev, role, diditSessionId: "", diditConsent: false }))} onContinue={onContinueRoleSelection} onBack={onBackToLanding} />}
         {view === "signup" && (
           <SignupPanel
             signupForm={signupForm}
             submitting={submitting}
             onSignupFormChange={onSignupFormChange}
-            onToggleVehicleType={onToggleVehicleType}
             onContinue={onBeginSignupVerification}
             onBack={onBackToLanding}
           />
@@ -1198,13 +1248,16 @@ function PageShell(props: Readonly<{
           <SignupVerificationPanel
             signupForm={signupForm}
             submitting={submitting}
-            debugCode={signupDebugCode}
             onSignupFormChange={onSignupFormChange}
-            onVerify={onSignup}
+            onVerify={onVerifySignupEmail}
             onSendCode={onRequestSignupCode}
             onBackToForm={onBackToSignupForm}
           />
         )}
+        {view === "signup_identity" && <SignupIdentityPanel signupForm={signupForm} submitting={submitting} onSignupFormChange={onSignupFormChange} onStart={onStartDiditVerification} onBack={onBackToSignupVerification} />}
+        {view === "signup_profile" && <SignupProfilePanel signupForm={signupForm} onSignupFormChange={onSignupFormChange} onToggleVehicleType={onToggleVehicleType} onContinue={onContinueSignupProfile} onBack={onBackToSignupIdentity} />}
+        {view === "signup_review" && <SignupReviewPanel signupForm={signupForm} submitting={submitting} onSubmit={onSignup} onBack={onBackToSignupProfile} />}
+        {view === "signup_submitted" && <SignupSubmittedPanel onBackToLogin={onBackToLogin} />}
       </section>
     );
   }
@@ -1218,6 +1271,20 @@ function PageShell(props: Readonly<{
         </>
       )}
 
+      {isPricingView && (
+        <>
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_14%_18%,rgba(34,211,238,0.18),transparent_30%),radial-gradient(circle_at_82%_16%,rgba(59,130,246,0.18),transparent_26%),radial-gradient(circle_at_50%_100%,rgba(6,182,212,0.14),transparent_34%),linear-gradient(180deg,#020817_0%,#031227_48%,#07192f_100%)]" />
+          <div
+            className="absolute inset-0 opacity-35"
+            style={{
+              backgroundImage:
+                "linear-gradient(rgba(125,211,252,0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(125,211,252,0.12) 1px, transparent 1px)",
+              backgroundSize: "72px 72px",
+            }}
+          />
+        </>
+      )}
+
       <div className="relative z-10 flex min-h-screen flex-col">
         <TopNavigation
           isAboutView={isAboutView}
@@ -1226,8 +1293,6 @@ function PageShell(props: Readonly<{
           loginMenuRef={loginMenuRef}
           onOpenLanding={onOpenLanding}
           onOpenPricing={onOpenPricing}
-          onOpenShipperSubscription={onOpenShipperSubscription}
-          onOpenCarrierSubscription={onOpenCarrierSubscription}
           onOpenResources={onOpenResources}
           onOpenAbout={onOpenAbout}
           onToggleLoginMenu={onToggleLoginMenu}
@@ -1246,10 +1311,10 @@ function PageShell(props: Readonly<{
 }
 
 export default function Home() {
+  const router = useRouter();
   const [view, setView] = useState<LandingView>("landing");
   const [loginMenuOpen, setLoginMenuOpen] = useState(false);
   const [showLoginPassword, setShowLoginPassword] = useState(false);
-  const [pricingSubscription, setPricingSubscription] = useState<PricingSubscription>("shipper");
   const [resourceSection, setResourceSection] = useState<ResourceSection>("events");
   const [loginForm, setLoginForm] = useState<LoginState>({
     email: "",
@@ -1262,18 +1327,28 @@ export default function Home() {
     taxId: "",
     dotNumber: "",
     vehicleTypes: ["dry_van"],
+    phone: "",
+    profileNotes: "",
     email: "",
     password: "",
     confirmPassword: "",
     emailVerificationCode: "",
+    diditSessionId: "",
+    diditConsent: false,
+    idDocumentName: "",
+    idDocumentMimeType: "",
+    idDocumentBase64: "",
     role: "client",
   });
   const [activeSessionName, setActiveSessionName] = useState<string | null>(null);
   const [activeSessionRole, setActiveSessionRole] = useState<LoginRole | null>(null);
   const [message, setMessage] = useState("");
-  const [signupDebugCode, setSignupDebugCode] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState<SubmitState>(null);
   const loginMenuRef = useRef<HTMLDivElement | null>(null);
+
+  function navigateToDashboard(role: LoginRole) {
+    router.push(resolveDashboardPath(role));
+  }
 
   function openRoleLogin(role: LoginRole) {
     setMessage("");
@@ -1316,28 +1391,49 @@ export default function Home() {
     setResourceSection("events");
     setMessage("");
   }
-  function openShipperSubscription() {
-    setView("pricing");
-    setPricingSubscription("shipper");
-    setMessage("");
-  }
-  function openCarrierSubscription() {
-    setView("pricing");
-    setPricingSubscription("carrier");
-    setMessage("");
-  }
 
   useEffect(() => {
     const kickoff = setTimeout(() => {
       const session = getAuthLiteSession();
       if (session) {
         setActiveSessionName(session.displayName);
-        setActiveSessionRole(session.role);
+        setActiveSessionRole(session.role === "driver" && getDriverPortalSession() ? "driver_token" : session.role);
       }
     }, 0);
 
     return () => clearTimeout(kickoff);
   }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(globalThis.window.location.search);
+    const sessionId = params.get("verificationSessionId");
+    const status = params.get("status");
+    if (!sessionId) {
+      return;
+    }
+
+    const kickoff = setTimeout(() => {
+      const savedSignup = globalThis.window.sessionStorage.getItem("freightaxis.didit.signup");
+      if (savedSignup) {
+        try {
+          const savedForm = JSON.parse(savedSignup) as SignupState;
+          setSignupForm({ ...savedForm, diditSessionId: sessionId });
+          setView("signup_profile");
+          setMessage(status === "Approved" ? "Identity verification complete. Continue with your role-specific profile." : "Identity verification was submitted. Account creation will continue once Didit approves it.");
+        } catch {
+          setMessage("Identity verification returned, but your signup details could not be restored. Please start again.");
+        }
+      }
+    }, 0);
+    globalThis.window.history.replaceState({}, "", globalThis.window.location.pathname);
+    return () => clearTimeout(kickoff);
+  }, []);
+
+  useEffect(() => {
+    router.prefetch("/client");
+    router.prefetch("/carrier");
+    router.prefetch("/driver");
+  }, [router]);
 
   useEffect(() => {
     function handleDocumentClick(event: MouseEvent) {
@@ -1352,9 +1448,6 @@ export default function Home() {
   }, []);
 
   function forgotPassword() {
-    if (loginForm.role === "driver") {
-      return;
-    }
     setMessage("");
     setView("forgot_password");
   }
@@ -1365,12 +1458,12 @@ export default function Home() {
       setMessage("Enter your email address to reset your password.");
       return;
     }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    if (!isValidEmailAddress(email)) {
       setMessage("Enter a valid email address.");
       return;
     }
 
-    const role: AuthRole = loginForm.role === "driver" ? "client" : loginForm.role;
+    const role: AuthRole = loginForm.role === "driver_token" ? "driver" : loginForm.role;
 
     setSubmitting("forgot_password");
     try {
@@ -1388,7 +1481,7 @@ export default function Home() {
     try {
       setSubmitting("login");
 
-      if (loginForm.role === "driver") {
+      if (loginForm.role === "driver_token") {
         const loginToken = loginForm.password.trim();
         if (!loginToken) {
           setMessage("Enter your driver token.");
@@ -1398,10 +1491,10 @@ export default function Home() {
         setDriverPortalSession(session);
         setAuthLiteSession("driver", session.driver_name, session.carrier_email);
         setActiveSessionName(session.driver_name);
-        setActiveSessionRole("driver");
+        setActiveSessionRole("driver_token");
         trackEvent("auth.sign_in", { role: "driver", displayName: session.driver_name });
         setMessage("");
-        navigateToDashboard("driver");
+        navigateToDashboard("driver_token");
         return;
       }
 
@@ -1417,6 +1510,9 @@ export default function Home() {
         role: loginForm.role,
       });
 
+      if (account.role === "driver") {
+        clearDriverPortalSession();
+      }
       setAuthLiteSession(account.role, account.display_name, account.email);
       setActiveSessionName(account.display_name);
       setActiveSessionRole(account.role);
@@ -1430,7 +1526,7 @@ export default function Home() {
     }
   }
 
-  function validateSignupForm(): { email: string; normalizedTaxId: string; normalizedDotNumber: string } | null {
+  function validateSignupForm(requireIdentity = true): { email: string; normalizedTaxId: string; normalizedDotNumber: string } | null {
     const email = signupForm.email.trim().toLowerCase();
     const normalizedTaxId = signupForm.taxId.trim().replace(/\D/g, "");
     const normalizedDotNumber = signupForm.dotNumber.trim().replace(/\D/g, "");
@@ -1439,6 +1535,7 @@ export default function Home() {
       form: signupForm,
       normalizedTaxId,
       normalizedDotNumber,
+      requireIdentity,
     });
     if (validationMessage) {
       setMessage(validationMessage);
@@ -1449,15 +1546,65 @@ export default function Home() {
   }
 
   async function beginSignupVerification() {
-    const validated = validateSignupForm();
+    const validated = validateSignupForm(false);
     if (!validated) {
       return;
     }
 
-    setSignupForm((prev) => ({ ...prev, emailVerificationCode: "" }));
-    setSignupDebugCode(null);
-    setView("signup_verify");
-    setMessage("Verify your email to continue.");
+    try {
+      setSubmitting("signup_code");
+      await requestSignupVerificationCode({ email: validated.email, role: signupForm.role });
+      setSignupForm((prev) => ({ ...prev, emailVerificationCode: "" }));
+      setView("signup_verify");
+      setMessage("Verification code sent. Check your email and enter the 6-digit code to continue.");
+    } catch (error: unknown) {
+      setMessage(getErrorMessage(error));
+    } finally {
+      setSubmitting(null);
+    }
+  }
+
+  async function verifySignupEmail() {
+    const validated = validateSignupForm(false);
+    const verificationCode = signupForm.emailVerificationCode.trim();
+    if (!validated || !isSixDigitCode(verificationCode)) {
+      setMessage("Enter the 6-digit verification code sent to your email.");
+      return;
+    }
+    try {
+      setSubmitting("signup");
+      await verifySignupEmailCode({ email: validated.email, role: signupForm.role, verification_code: verificationCode });
+      setMessage("Email verified. Continue to identity verification.");
+      setView("signup_identity");
+    } catch (error: unknown) {
+      setMessage(getErrorMessage(error));
+    } finally {
+      setSubmitting(null);
+    }
+  }
+
+  async function startDiditVerification() {
+    const fullName = signupForm.fullName.trim();
+    const email = signupForm.email.trim().toLowerCase();
+    if (!fullName || !isValidEmailAddress(email)) {
+      setMessage("Enter your full name and a valid email before verifying your identity.");
+      return;
+    }
+    if (!signupForm.diditConsent) {
+      setMessage("Consent is required before identity verification.");
+      return;
+    }
+
+    try {
+      setSubmitting("didit");
+      const session = await createDiditSession({ full_name: fullName, email, role: signupForm.role });
+      globalThis.window.sessionStorage.setItem("freightaxis.didit.signup", JSON.stringify({ ...signupForm, diditSessionId: session.session_id }));
+      globalThis.window.location.assign(session.url);
+    } catch (error: unknown) {
+      setMessage(getErrorMessage(error));
+    } finally {
+      setSubmitting(null);
+    }
   }
 
   async function signup() {
@@ -1474,7 +1621,7 @@ export default function Home() {
       return;
     }
 
-    if (!/^\d{6}$/.test(verificationCode)) {
+    if (!isSixDigitCode(verificationCode)) {
       setMessage("Enter the 6-digit verification code sent to your email.");
       return;
     }
@@ -1484,11 +1631,14 @@ export default function Home() {
       const account = await signupAccount({
         full_name: fullName,
         company_name: companyName,
+        phone: signupForm.phone.trim() || null,
+        bio: signupForm.profileNotes.trim() || null,
         tax_id: isCarrier ? taxId : null,
         dot_number: isCarrier ? dotNumber : null,
-        id_document_name: "legacy-signup-id.txt",
-        id_document_mime_type: "text/plain",
-        id_document_base64: "bGVnYWN5LXNpZ251cC1pZA==",
+        didit_session_id: signupForm.diditSessionId || null,
+        id_document_name: signupForm.idDocumentName,
+        id_document_mime_type: signupForm.idDocumentMimeType,
+        id_document_base64: signupForm.idDocumentBase64,
         vehicle_types: isCarrier ? carrierVehicleTypes : null,
         email,
         password,
@@ -1496,13 +1646,9 @@ export default function Home() {
         role: signupForm.role,
       });
 
-      setAuthLiteSession(account.role, account.display_name, account.email);
-      setActiveSessionName(account.display_name);
-      setActiveSessionRole(account.role);
-      setSignupDebugCode(null);
-      trackEvent("auth.sign_up", { role: account.role, displayName: account.display_name });
+      trackEvent("auth.sign_up", { role: account.role, displayName: account.company_name });
       setMessage("");
-      navigateToDashboard(account.role);
+      setView("signup_submitted");
     } catch (error: unknown) {
       setMessage(getErrorMessage(error));
     } finally {
@@ -1511,20 +1657,15 @@ export default function Home() {
   }
 
   async function requestSignupCode() {
-    const validated = validateSignupForm();
+    const validated = validateSignupForm(false);
     if (!validated) {
       return;
     }
 
     try {
       setSubmitting("signup_code");
-      const response = await requestSignupVerificationCode({ email: validated.email, role: signupForm.role });
-      setSignupDebugCode(response.debug_code ?? null);
-      setMessage(
-        response.debug_code
-          ? `Verification code sent. Local test code: ${response.debug_code}`
-          : "Verification code sent. Check your email and enter the 6-digit code to continue."
-      );
+      await requestSignupVerificationCode({ email: validated.email, role: signupForm.role });
+      setMessage("Verification code sent. Check your email and enter the 6-digit code to continue.");
     } catch (error: unknown) {
       setMessage(getErrorMessage(error));
     } finally {
@@ -1539,6 +1680,19 @@ export default function Home() {
     }));
   }
 
+  function continueSignupProfile() {
+    if (!signupForm.phone.trim()) {
+      setMessage("Enter a contact phone number for your application.");
+      return;
+    }
+    if (signupForm.role !== "carrier" && !signupForm.profileNotes.trim()) {
+      setMessage("Complete your role-specific profile before review.");
+      return;
+    }
+    setMessage("");
+    setView("signup_review");
+  }
+
   return (
     <>
       <PageShell
@@ -1551,13 +1705,10 @@ export default function Home() {
         showLoginPassword={showLoginPassword}
         loginForm={loginForm}
         signupForm={signupForm}
-        pricingSubscription={pricingSubscription}
         resourceSection={resourceSection}
         submitting={submitting}
         onOpenLanding={openLanding}
         onOpenPricing={openPricing}
-        onOpenShipperSubscription={openShipperSubscription}
-        onOpenCarrierSubscription={openCarrierSubscription}
         onOpenResources={openResources}
         onOpenAbout={openAboutSection}
         onToggleLoginMenu={() => setLoginMenuOpen((prev) => !prev)}
@@ -1565,7 +1716,7 @@ export default function Home() {
         onCreateAccount={() => {
           setLoginMenuOpen(false);
           setMessage("");
-          setView("signup");
+          setView("signup_role");
         }}
         onOpenProfile={openActiveProfile}
         onSignOut={signOut}
@@ -1579,18 +1730,37 @@ export default function Home() {
         onSignupFormChange={setSignupForm}
         onToggleVehicleType={toggleSignupCarrierVehicleType}
         onRequestSignupCode={requestSignupCode}
+        onBackToRoleSelection={() => {
+          setMessage("");
+          setView("signup_role");
+        }}
         onBackToSignupForm={() => {
-          setSignupDebugCode(null);
           setView("signup");
           setMessage("");
         }}
-        signupDebugCode={signupDebugCode}
-        onSelectPricingSubscription={setPricingSubscription}
+        onBackToSignupVerification={() => {
+          setMessage("");
+          setView("signup_verify");
+        }}
+        onBackToSignupIdentity={() => {
+          setMessage("");
+          setView("signup_identity");
+        }}
+        onBackToSignupProfile={() => {
+          setMessage("");
+          setView("signup_profile");
+        }}
         onSelectResourceSection={setResourceSection}
         onSignup={signup}
+        onStartDiditVerification={startDiditVerification}
         onBeginSignupVerification={beginSignupVerification}
+        onContinueRoleSelection={() => {
+          setMessage("");
+          setView("signup");
+        }}
+        onVerifySignupEmail={verifySignupEmail}
+        onContinueSignupProfile={continueSignupProfile}
         onBackToLanding={() => {
-          setSignupDebugCode(null);
           setMessage("");
           setView("landing");
         }}

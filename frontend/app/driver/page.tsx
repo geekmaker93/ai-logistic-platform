@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { clearAuthLiteSession, clearDriverPortalSession, getDriverPortalSession, type DriverPortalSession } from "@/lib/auth-lite";
 import {
   getDriverCurrentShipment,
@@ -12,6 +12,8 @@ import {
 } from "@/lib/logistics-api";
 
 type TrackingState = "idle" | "starting" | "updating";
+type SelectedDocument = { name: string; mimeType: string; base64: string };
+type DriverDocumentType = "bill_of_lading" | "proof_of_delivery" | "other";
 
 function formatDateTime(value: string | null | undefined): string {
   if (!value) {
@@ -59,6 +61,9 @@ export default function DriverPortalPage() {
   const [trackingNote, setTrackingNote] = useState("");
   const [docName, setDocName] = useState("");
   const [docText, setDocText] = useState("");
+  const [documentType, setDocumentType] = useState<DriverDocumentType>("bill_of_lading");
+  const [selectedDocument, setSelectedDocument] = useState<SelectedDocument | null>(null);
+  const [uploadingDocument, setUploadingDocument] = useState(false);
   const [message, setMessage] = useState("");
 
   const shipment = payload?.shipment ?? null;
@@ -80,14 +85,14 @@ export default function DriverPortalPage() {
   }, []);
 
   useEffect(() => {
-    const nextSession = getDriverPortalSession();
-    if (!nextSession) {
+    const storedSession = getDriverPortalSession();
+    if (!storedSession) {
       globalThis.window.location.assign("/");
       return;
     }
 
-    setSession(nextSession);
-    void loadDriverState(nextSession.driver_id);
+    setSession(storedSession);
+    void loadDriverState(storedSession.driver_id);
   }, [loadDriverState]);
 
   async function handleStartTracking() {
@@ -139,26 +144,55 @@ export default function DriverPortalPage() {
       return;
     }
 
-    const safeName = docName.trim();
-    if (!safeName) {
-      setMessage("Enter a document name.");
+    if (!selectedDocument) {
+      setMessage("Choose a BOL or other document before uploading.");
       return;
     }
+    const safeName = docName.trim() || selectedDocument.name;
 
+    setUploadingDocument(true);
     setMessage("");
     try {
       await uploadDriverDocument({
         driver_id: session.driver_id,
         document_name: safeName,
-        document_type: "driver_note",
-        content_text: docText.trim() || undefined,
+        document_type: documentType,
+        notes: docText.trim() || undefined,
+        file_mime_type: selectedDocument.mimeType,
+        file_base64: selectedDocument.base64,
       });
       setDocName("");
       setDocText("");
-      setMessage("Document uploaded.");
+      setSelectedDocument(null);
+      setMessage("Document sent to the carrier Documents section.");
     } catch (error: unknown) {
       setMessage(error instanceof Error ? error.message : "Failed to upload document.");
+    } finally {
+      setUploadingDocument(false);
     }
+  }
+
+  function handleDocumentSelection(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (file.size > 4_000_000) {
+      setMessage("Choose a document smaller than 4 MB.");
+      event.target.value = "";
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== "string") return;
+      setSelectedDocument({
+        name: file.name,
+        mimeType: file.type || "application/octet-stream",
+        base64: reader.result.split(",", 2)[1] ?? "",
+      });
+      if (!docName.trim()) setDocName(file.name);
+      setMessage("Document ready to upload.");
+    };
+    reader.readAsDataURL(file);
   }
 
   return (
@@ -167,7 +201,7 @@ export default function DriverPortalPage() {
         <header className="rounded-2xl border border-cyan-300/20 bg-[#031227]/75 p-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">Driver Portal</p>
+              <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">Drive Portal</p>
               <h1 className="mt-2 text-2xl font-semibold">Road Operations Console</h1>
               {session && (
                 <p className="mt-2 text-sm text-cyan-100">
@@ -267,7 +301,8 @@ export default function DriverPortalPage() {
         </section>
 
         <section className="rounded-2xl border border-cyan-300/20 bg-[#031227]/75 p-5">
-          <h2 className="text-lg font-semibold">Upload Driver Document</h2>
+          <h2 className="text-lg font-semibold">Send Document to Carrier</h2>
+          <p className="mt-1 text-sm text-slate-300">Select your BOL, proof of delivery, or another required document. It will appear in your carrier&apos;s Documents section.</p>
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             <input
               value={docName}
@@ -279,15 +314,39 @@ export default function DriverPortalPage() {
               type="button"
               onClick={handleUploadDocument}
               className="rounded-lg border border-cyan-300/40 px-4 py-2 text-sm hover:bg-cyan-500/15"
-              disabled={!canUpdateTracking}
+              disabled={!session || uploadingDocument}
             >
-              Upload
+              {uploadingDocument ? "Uploading..." : "Upload"}
             </button>
           </div>
+          <div className="mt-3 grid gap-1 text-sm text-cyan-100">
+            <label htmlFor="drive-portal-document-type">Document type</label>
+            <select
+              id="drive-portal-document-type"
+              value={documentType}
+              onChange={(event) => setDocumentType(event.target.value as DriverDocumentType)}
+              className="rounded-lg border border-cyan-300/25 bg-[#041a34] px-3 py-2 text-sm text-white outline-none ring-cyan-300 focus:ring-2"
+            >
+              <option value="bill_of_lading">Bill of lading</option>
+              <option value="proof_of_delivery">Proof of delivery</option>
+              <option value="other">Other document</option>
+            </select>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-3">
+            <div className="rounded-lg border border-cyan-300/40 px-3 py-2 text-sm text-cyan-100 hover:bg-cyan-500/15">
+              <label htmlFor="drive-portal-gallery">Choose from gallery</label>
+              <input id="drive-portal-gallery" type="file" accept="image/*,application/pdf,.doc,.docx,.txt" onChange={handleDocumentSelection} className="sr-only" />
+            </div>
+            <div className="rounded-lg border border-cyan-300/40 px-3 py-2 text-sm text-cyan-100 hover:bg-cyan-500/15">
+              <label htmlFor="drive-portal-camera">Take photo</label>
+              <input id="drive-portal-camera" type="file" accept="image/*" capture="environment" onChange={handleDocumentSelection} className="sr-only" />
+            </div>
+          </div>
+          {selectedDocument && <p className="mt-2 text-xs text-cyan-200">Ready: {selectedDocument.name}</p>}
           <textarea
             value={docText}
             onChange={(event) => setDocText(event.target.value)}
-            placeholder="Document content or notes"
+            placeholder="Optional note for the carrier"
             className="mt-3 w-full rounded-lg border border-cyan-300/25 bg-[#041a34] px-3 py-2 text-sm text-white outline-none ring-cyan-300 placeholder:text-slate-400 focus:ring-2"
             rows={4}
           />

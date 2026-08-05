@@ -7,6 +7,8 @@ import hashlib
 import hmac
 import re
 import smtplib
+import time
+import traceback
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
@@ -14,11 +16,11 @@ from enum import Enum
 from math import inf
 from typing import Literal, cast
 from uuid import uuid4
-from urllib.parse import urlencode
-from urllib.request import urlopen
+from urllib.parse import quote, urlencode, urlparse
+from urllib.request import Request as UrlRequest, urlopen
 from urllib.error import URLError
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import JSON, Boolean, DateTime, Float, Integer, String, Text, UniqueConstraint, create_engine, or_, select, text
@@ -85,7 +87,7 @@ EIA_DUOAREA = os.getenv("EIA_DUOAREA", "R1X").strip()
 EIA_PRODUCT = os.getenv("EIA_PRODUCT", "EPD2D").strip()
 GAS_PRICE_FALLBACK_USD_PER_LITER = float(os.getenv("GAS_PRICE_FALLBACK_USD_PER_LITER", "1.2"))
 DRIVER_SESSION_NOT_FOUND_DETAIL = "Driver session not found."
-FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://127.0.0.1:3000").strip()
+FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "https://lynkxpress.com").strip()
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
 STRIPE_CLIENT_PRICE_ID = os.getenv("STRIPE_CLIENT_PRICE_ID", "").strip()
 STRIPE_CARRIER_PRICE_ID = os.getenv("STRIPE_CARRIER_PRICE_ID", "").strip()
@@ -97,11 +99,26 @@ SIGNUP_SMTP_LOGIN = os.getenv("SIGNUP_SMTP_LOGIN", "").strip()
 SIGNUP_SMTP_PASSWORD = os.getenv("SIGNUP_SMTP_PASSWORD", "").strip()
 SIGNUP_SMTP_FROM_EMAIL = os.getenv("SIGNUP_SMTP_FROM_EMAIL", SIGNUP_SMTP_LOGIN).strip()
 SIGNUP_SMTP_FROM_NAME = os.getenv("SIGNUP_SMTP_FROM_NAME", "FreightAxis").strip()
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", "").strip()
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
+RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "verification@lynkxpress.com").strip()
+RESEND_FROM_NAME = os.getenv("RESEND_FROM_NAME", "FreightAxis").strip()
+SIGNUP_EMAIL_ALLOW_RESEND_FALLBACK = os.getenv("SIGNUP_EMAIL_ALLOW_RESEND_FALLBACK", "false").strip().lower() in {"1", "true", "yes", "on"}
+PASSWORD_RESET_TOKEN_TTL_MINUTES = int(os.getenv("PASSWORD_RESET_TOKEN_TTL_MINUTES", "60"))
 SHIPPER_REVIEW_PERIOD_HOURS = float(os.getenv("SHIPPER_REVIEW_PERIOD_HOURS", "0"))
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "").strip()
+DIDIT_API_KEY = os.getenv("DIDIT_API_KEY", "").strip()
+DIDIT_WORKFLOW_ID = os.getenv("DIDIT_WORKFLOW_ID", "").strip()
+DIDIT_API_BASE_URL = os.getenv("DIDIT_API_BASE_URL", "https://verification.didit.me/v3").rstrip("/")
 MAX_SIGNUP_ID_DOCUMENT_BYTES = 5 * 1024 * 1024
 ALLOWED_SIGNUP_ID_MIME_TYPES = {"application/pdf", "image/jpeg", "image/png"}
 QUOTE_STATUS_PENDING = "pending"
+AUTH_RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("AUTH_RATE_LIMIT_WINDOW_SECONDS", "60"))
+AUTH_RATE_LIMIT_MAX_REQUESTS = int(os.getenv("AUTH_RATE_LIMIT_MAX_REQUESTS", "6"))
+AUTH_SESSION_COOKIE_NAME = os.getenv("AUTH_SESSION_COOKIE_NAME", "ai_logistics_session")
+AUTH_SESSION_COOKIE_SECRET = os.getenv("AUTH_SESSION_COOKIE_SECRET", "local-dev-session-secret").strip()
+AUTH_SESSION_COOKIE_SECURE = os.getenv("AUTH_SESSION_COOKIE_SECURE", "false").strip().lower() in {"1", "true", "yes", "on"}
+AUTH_SESSION_COOKIE_MAX_AGE_SECONDS = int(os.getenv("AUTH_SESSION_COOKIE_MAX_AGE_SECONDS", str(7 * 24 * 60 * 60)))
 QUOTE_STATUS_ACCEPTED = "accepted"
 QUOTE_STATUS_PAID = "paid"
 PAYOUT_STATUS_PENDING = "pending"
@@ -354,23 +371,41 @@ class RebookCarrierShipmentRequest(BaseModel):
 class AuthSignupRequest(BaseModel):
 	full_name: str = Field(min_length=2, max_length=120)
 	company_name: str = Field(min_length=2, max_length=120)
+	phone: str | None = Field(default=None, max_length=32)
+	bio: str | None = Field(default=None, max_length=400)
 	tax_id: str | None = Field(default=None, max_length=32)
 	dot_number: str | None = Field(default=None, max_length=32)
-	id_document_name: str = Field(min_length=3, max_length=180)
-	id_document_mime_type: str = Field(min_length=3, max_length=80)
-	id_document_base64: str = Field(min_length=16, max_length=9000000)
+	didit_session_id: str | None = Field(default=None, min_length=8, max_length=120)
+	id_document_name: str | None = Field(default=None, max_length=180)
+	id_document_mime_type: str | None = Field(default=None, max_length=80)
+	id_document_base64: str | None = Field(default=None, max_length=9000000)
 	vehicle_types: list[str] | None = None
 	base_location: str | None = Field(default=None, max_length=140)
 	service_regions: list[str] | None = None
 	email: str = Field(min_length=4, max_length=320)
 	password: str = Field(min_length=8, max_length=120)
 	email_verification_code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
-	role: Literal["client", "carrier"]
+	role: Literal["client", "carrier", "driver"]
+
+
+class DiditSessionRequest(BaseModel):
+	full_name: str = Field(min_length=2, max_length=120)
+	email: str = Field(min_length=4, max_length=320)
+	role: Literal["client", "carrier", "driver"]
+
+
+class DiditSessionResponse(BaseModel):
+	session_id: str
+	url: str
 
 
 class AuthSignupVerificationCodeRequest(BaseModel):
 	email: str = Field(min_length=4, max_length=320)
-	role: Literal["client", "carrier"]
+	role: Literal["client", "carrier", "driver"]
+
+
+class AuthSignupVerifyEmailCodeRequest(AuthSignupVerificationCodeRequest):
+	verification_code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
 
 
 class AuthSignupVerificationCodeResponse(BaseModel):
@@ -378,14 +413,30 @@ class AuthSignupVerificationCodeResponse(BaseModel):
 	debug_code: str | None = None
 
 
+class AuthPasswordResetRequest(BaseModel):
+	email: str = Field(min_length=4, max_length=320)
+	role: Literal["client", "carrier", "driver"]
+
+
+class AuthPasswordResetConfirmRequest(BaseModel):
+	email: str = Field(min_length=4, max_length=320)
+	token: str = Field(min_length=16, max_length=128)
+	new_password: str = Field(min_length=8, max_length=120)
+	role: Literal["client", "carrier", "driver"]
+
+
+class AuthPasswordResetResponse(BaseModel):
+	detail: str
+
+
 class AuthLoginRequest(BaseModel):
 	email: str = Field(min_length=4, max_length=320)
 	password: str = Field(min_length=1, max_length=120)
-	role: Literal["client", "carrier"]
+	role: Literal["client", "carrier", "driver"]
 
 
 class AuthSessionResponse(BaseModel):
-	role: Literal["client", "carrier"]
+	role: Literal["client", "carrier", "driver"]
 	display_name: str
 	full_name: str
 	company_name: str
@@ -397,10 +448,23 @@ class AuthSessionResponse(BaseModel):
 	subscription_current_period_end: datetime | None
 
 
+class SignupApplicationResponse(BaseModel):
+	role: Literal["client", "carrier", "driver"]
+	full_name: str
+	company_name: str
+	email: str
+	approval_status: Literal["pending_review", "active", "rejected"]
+	created_at: datetime
+
+
+class SignupApplicationSummaryResponse(SignupApplicationResponse):
+	user_id: str
+
+
 class SignupIdentitySubmissionSummaryResponse(BaseModel):
 	id: str
 	user_id: str
-	role: Literal["client", "carrier"]
+	role: Literal["client", "carrier", "driver"]
 	full_name: str
 	company_name: str
 	document_name: str
@@ -446,7 +510,7 @@ class CarrierSettingsResponse(BaseModel):
 
 
 class AuthProfileResponse(BaseModel):
-	role: Literal["client", "carrier"]
+	role: Literal["client", "carrier", "driver"]
 	display_name: str
 	full_name: str
 	company_name: str
@@ -543,6 +607,32 @@ class AuthProfileUpdateRequest(BaseModel):
 	carrier_profile: CarrierSettingsPayload | None = None
 
 
+class DriverApplicationProfilePayload(BaseModel):
+	first_name: str = Field(min_length=1, max_length=80)
+	last_name: str = Field(min_length=1, max_length=80)
+	phone: str = Field(min_length=7, max_length=32)
+	address: str = Field(min_length=3, max_length=180)
+	zip_code: str = Field(min_length=3, max_length=16)
+	cdl_information: str = Field(min_length=2, max_length=240)
+	years_experience: int = Field(ge=0, le=80)
+	qualifications: str = Field(default="", max_length=2000)
+	endorsements: str = Field(default="", max_length=1000)
+	availability_notes: str = Field(default="", max_length=600)
+	truck_type: str = Field(default="", max_length=120)
+	trailer_type: str = Field(default="", max_length=120)
+	capacity: str = Field(default="", max_length=120)
+	vehicle_information: str = Field(default="", max_length=500)
+	availability_status: Literal["available", "on_load", "unavailable"]
+	resume_name: str | None = Field(default=None, max_length=180)
+	resume_mime_type: str | None = Field(default=None, max_length=100)
+	resume_base64: str | None = Field(default=None, max_length=9000000)
+
+
+class DriverApplicationProfileResponse(DriverApplicationProfilePayload):
+	email: str
+	updated_at: datetime
+
+
 class CarrierDriverTokenRequest(BaseModel):
 	driver_name: str = Field(min_length=2, max_length=120)
 	driver_mobile: str = Field(min_length=7, max_length=32)
@@ -620,6 +710,8 @@ class DriverDocumentUploadRequest(BaseModel):
 	document_type: str = Field(default="general", min_length=2, max_length=64)
 	notes: str | None = Field(default=None, max_length=400)
 	content_text: str | None = Field(default=None, max_length=4000)
+	file_mime_type: str | None = Field(default=None, max_length=100)
+	file_base64: str | None = Field(default=None, max_length=6000000)
 
 
 class DriverDocumentRecordResponse(BaseModel):
@@ -632,6 +724,8 @@ class DriverDocumentRecordResponse(BaseModel):
 	document_type: str
 	notes: str | None
 	content_text: str | None
+	file_mime_type: str | None
+	file_base64: str | None
 	created_at: datetime
 
 
@@ -696,6 +790,20 @@ class Base(DeclarativeBase):
 	pass
 
 
+class TemporaryUploadBase(DeclarativeBase):
+	pass
+
+
+class TemporaryUploadModel(TemporaryUploadBase):
+	__tablename__ = "temporary_uploads"
+
+	id: Mapped[str] = mapped_column(String(64), primary_key=True)
+	file_name: Mapped[str] = mapped_column(String(180), nullable=False)
+	mime_type: Mapped[str] = mapped_column(String(100), nullable=False)
+	file_base64: Mapped[str] = mapped_column(Text, nullable=False)
+	created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ShipmentModel(Base):
 	__tablename__ = "shipments"
 
@@ -756,7 +864,34 @@ class UserModel(Base):
 	subscription_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
 	subscription_plan: Mapped[str | None] = mapped_column(String(16), nullable=True)
 	subscription_current_period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+	approval_status: Mapped[str] = mapped_column(String(24), nullable=False, default="active")
 	created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+	updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class DriverApplicationModel(Base):
+	__tablename__ = "driver_applications"
+
+	user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+	first_name: Mapped[str] = mapped_column(String(80), nullable=False)
+	last_name: Mapped[str] = mapped_column(String(80), nullable=False)
+	phone: Mapped[str] = mapped_column(String(32), nullable=False)
+	address: Mapped[str] = mapped_column(String(180), nullable=False)
+	zip_code: Mapped[str] = mapped_column(String(16), nullable=False)
+	cdl_information: Mapped[str] = mapped_column(String(240), nullable=False)
+	years_experience: Mapped[int] = mapped_column(nullable=False, default=0)
+	qualifications: Mapped[str] = mapped_column(String(2000), nullable=False, default="")
+	endorsements: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+	availability_notes: Mapped[str] = mapped_column(String(600), nullable=False, default="")
+	truck_type: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+	trailer_type: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+	capacity: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+	vehicle_information: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+	availability_status: Mapped[str] = mapped_column(String(16), nullable=False, default="available")
+	resume_name: Mapped[str | None] = mapped_column(String(180), nullable=True)
+	resume_mime_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+	resume_base64: Mapped[str | None] = mapped_column(Text, nullable=True)
+	resume_temporary_upload_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 	updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -812,6 +947,9 @@ class DriverDocumentModel(Base):
 	document_type: Mapped[str] = mapped_column(String(64), nullable=False)
 	notes: Mapped[str | None] = mapped_column(String(400), nullable=True)
 	content_text: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+	file_mime_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+	file_base64: Mapped[str | None] = mapped_column(Text, nullable=True)
+	temporary_upload_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 	created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -826,6 +964,9 @@ class SignupIdentityDocumentModel(Base):
 	document_name: Mapped[str] = mapped_column(String(180), nullable=False)
 	document_mime_type: Mapped[str] = mapped_column(String(80), nullable=False)
 	document_base64: Mapped[str] = mapped_column(Text, nullable=False)
+	temporary_upload_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+	persona_inquiry_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+	didit_session_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
 	created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -838,6 +979,18 @@ class SignupEmailVerificationModel(Base):
 	role: Mapped[str] = mapped_column(String(16), nullable=False)
 	code_hash: Mapped[str] = mapped_column(String(256), nullable=False)
 	expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+	created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PasswordResetTokenModel(Base):
+	__tablename__ = "password_reset_tokens"
+	__table_args__ = (UniqueConstraint("user_id", name="uq_password_reset_tokens_user_id"),)
+
+	id: Mapped[str] = mapped_column(String(64), primary_key=True)
+	user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+	token_hash: Mapped[str] = mapped_column(String(256), nullable=False)
+	expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+	used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 	created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -929,24 +1082,58 @@ carrier_directory: list[CarrierProfile] = [
 
 app = FastAPI(title="AI Logistics MVP API", version="0.2.0")
 
+allowed_origins = [FRONTEND_BASE_URL] if FRONTEND_BASE_URL else []
+parsed_frontend = urlparse(FRONTEND_BASE_URL)
+if parsed_frontend.scheme and parsed_frontend.hostname:
+	allowed_origins.append(f"{parsed_frontend.scheme}://{parsed_frontend.hostname}")
+	if parsed_frontend.hostname in {"127.0.0.1", "localhost"}:
+		other_host = "localhost" if parsed_frontend.hostname == "127.0.0.1" else "127.0.0.1"
+		allowed_origins.extend([
+			f"{parsed_frontend.scheme}://{parsed_frontend.hostname}:3000",
+			f"{parsed_frontend.scheme}://{other_host}:3000",
+			f"{parsed_frontend.scheme}://{parsed_frontend.hostname}:3001",
+			f"{parsed_frontend.scheme}://{other_host}:3001",
+		])
+	else:
+		allowed_origins.extend([
+			f"{parsed_frontend.scheme}://{parsed_frontend.hostname}:3000",
+			f"{parsed_frontend.scheme}://{parsed_frontend.hostname}:3001",
+		])
+allowed_origins = list(dict.fromkeys([origin for origin in allowed_origins if origin]))
+if not allowed_origins:
+		allowed_origins = ["https://lynkxpress.com", "http://127.0.0.1:3000", "http://localhost:3000", "http://localhost:3001"]
 app.add_middleware(
 	CORSMiddleware,
-	allow_origins=["*"],
+	allow_origins=allowed_origins,
+	allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:[0-9]+)?",
 	allow_credentials=True,
 	allow_methods=["*"],
 	allow_headers=["*"],
 )
 DEFAULT_DB_PATH = Path(__file__).resolve().parent / "logistics.db"
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DEFAULT_DB_PATH.as_posix()}")
+DEFAULT_TEMP_UPLOAD_DB_PATH = Path(__file__).resolve().parent / "temporary_uploads.db"
+TEMP_UPLOAD_DATABASE_URL = os.getenv("TEMP_UPLOAD_DATABASE_URL", f"sqlite:///{DEFAULT_TEMP_UPLOAD_DB_PATH.as_posix()}")
 engine = create_engine(
 	DATABASE_URL,
 	connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
 )
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+temporary_upload_engine = create_engine(
+	TEMP_UPLOAD_DATABASE_URL,
+	connect_args={"check_same_thread": False} if TEMP_UPLOAD_DATABASE_URL.startswith("sqlite") else {},
+)
+TemporaryUploadSession = sessionmaker(bind=temporary_upload_engine, autocommit=False, autoflush=False)
 
 
 def utc_now() -> datetime:
 	return datetime.now(timezone.utc)
+
+
+def normalize_datetime_to_utc(value: datetime) -> datetime:
+	if value.tzinfo is None:
+		return value.replace(tzinfo=timezone.utc)
+	return value.astimezone(timezone.utc)
 
 
 def normalize_email(email: str) -> str:
@@ -955,17 +1142,40 @@ def normalize_email(email: str) -> str:
 
 def hash_password(password: str) -> str:
 	salt = os.urandom(16).hex()
-	digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), 120_000).hex()
-	return f"{salt}${digest}"
+	digest = hashlib.scrypt(
+		password.encode("utf-8"),
+		salt=bytes.fromhex(salt),
+		n=2**14,
+		r=8,
+		p=1,
+		dklen=64,
+	).hex()
+	return f"scrypt${salt}${digest}"
 
 
 def verify_password(password: str, stored_hash: str) -> bool:
-	parts = stored_hash.split("$", 1)
-	if len(parts) != 2:
+	parts = stored_hash.split("$")
+	if len(parts) == 2:
+		algorithm = "pbkdf2"
+		salt, expected_digest = parts
+	elif len(parts) == 3:
+		algorithm, salt, expected_digest = parts
+	else:
 		return False
-	salt, expected_digest = parts
 	try:
-		calculated = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), 120_000).hex()
+		if algorithm == "scrypt":
+			calculated = hashlib.scrypt(
+				password.encode("utf-8"),
+				salt=bytes.fromhex(salt),
+				n=2**14,
+				r=8,
+				p=1,
+				dklen=64,
+			).hex()
+		elif algorithm == "pbkdf2":
+			calculated = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), 120_000).hex()
+		else:
+			return False
 	except ValueError:
 		return False
 	return hmac.compare_digest(calculated, expected_digest)
@@ -975,42 +1185,291 @@ def is_valid_email(email: str) -> bool:
 	return bool(re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email))
 
 
+def get_client_ip(request: Request) -> str:
+	if request.client is None or request.client.host is None:
+		return "unknown"
+	return request.client.host
+
+
+def enforce_auth_rate_limit(request: Request, endpoint: str) -> None:
+	now = time.monotonic()
+	window_start = now - AUTH_RATE_LIMIT_WINDOW_SECONDS
+	client_key = (get_client_ip(request), endpoint)
+	attempts = _auth_rate_limit_store.get(client_key, [])
+	attempts = [stamp for stamp in attempts if stamp >= window_start]
+	if len(attempts) >= AUTH_RATE_LIMIT_MAX_REQUESTS:
+		raise HTTPException(
+			status_code=429,
+			detail="Too many requests. Try again in a few minutes.",
+		)
+	attempts.append(now)
+	_auth_rate_limit_store[client_key] = attempts
+
+
+def create_auth_session_token(user_id: str) -> str:
+	expires_at = int(time.time()) + AUTH_SESSION_COOKIE_MAX_AGE_SECONDS
+	payload = f"{user_id}:{expires_at}".encode("utf-8")
+	signature = hmac.new(AUTH_SESSION_COOKIE_SECRET.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+	return f"{user_id}:{expires_at}:{signature}"
+
+
+def set_auth_session_cookie(response: Response, user_id: str) -> None:
+	session_token = create_auth_session_token(user_id)
+	response.set_cookie(
+		key=AUTH_SESSION_COOKIE_NAME,
+		value=session_token,
+		httponly=True,
+		secure=AUTH_SESSION_COOKIE_SECURE,
+		samesite="lax",
+		max_age=AUTH_SESSION_COOKIE_MAX_AGE_SECONDS,
+		path="/",
+	)
+
+
+def verify_auth_session_token(token: str) -> str | None:
+	parts = token.split(":")
+	if len(parts) != 3:
+		return None
+	user_id, expires_at_str, signature = parts
+	try:
+		expires_at = int(expires_at_str)
+	except ValueError:
+		return None
+	if expires_at < int(time.time()):
+		return None
+	payload = f"{user_id}:{expires_at}".encode("utf-8")
+	expected = hmac.new(AUTH_SESSION_COOKIE_SECRET.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+	if not hmac.compare_digest(expected, signature):
+		return None
+	return user_id
+
+
+def get_auth_session_user_id(request: Request) -> str | None:
+	token = request.cookies.get(AUTH_SESSION_COOKIE_NAME)
+	if not token:
+		return None
+	return verify_auth_session_token(token)
+
+
+_auth_rate_limit_store: dict[tuple[str, str], list[float]] = {}
+
+
 def generate_signup_verification_code() -> str:
 	return f"{int.from_bytes(os.urandom(4), byteorder='big') % 1_000_000:06d}"
 
 
-def send_signup_verification_email(recipient_email: str, code: str) -> None:
-	if not SIGNUP_SMTP_HOST or not SIGNUP_SMTP_LOGIN or not SIGNUP_SMTP_PASSWORD:
+def send_resend_email(recipient_email: str, subject: str, html_content: str, text_content: str) -> None:
+	if not RESEND_API_KEY or not RESEND_FROM_EMAIL:
 		raise HTTPException(
 			status_code=503,
-			detail="Email verification is not configured. Please set SMTP environment variables.",
+			detail="Resend email sender is not configured. Please set RESEND_API_KEY and RESEND_FROM_EMAIL.",
+		)
+
+	payload = json.dumps(
+		{
+			"from": f"{RESEND_FROM_NAME or 'FreightAxis'} <{RESEND_FROM_EMAIL}>",
+			"to": [recipient_email],
+			"subject": subject,
+			"html": html_content,
+			"text": text_content,
+		}
+	).encode("utf-8")
+
+	request = UrlRequest(
+		"https://api.resend.com/emails",
+		data=payload,
+		headers={
+			"Content-Type": "application/json",
+			"Accept": "application/json",
+			"Accept-Language": "en-US,en;q=0.9",
+			"Authorization": f"Bearer {RESEND_API_KEY}",
+			"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+		},
+		method="POST",
+	)
+
+	try:
+		response = urlopen(request, timeout=20)
+		status_code = response.getcode()
+		if status_code >= 400:
+			raise HTTPException(
+				status_code=503,
+				detail="Unable to send verification code email right now. Please try again.",
+			)
+	except URLError as exc:
+		print("[backend] Resend email send failed:", exc)
+		traceback.print_exc()
+		raise HTTPException(
+			status_code=503,
+			detail="Unable to send verification code email right now. Please try again.",
+		)
+
+
+def send_signup_verification_email(recipient_email: str, code: str) -> None:
+	html_content = (
+		"<div style='font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; background: #031227; color: #f8fafc;'>"
+		"<h2 style='margin: 0 0 12px; color: #67e8f9;'>Verify your email</h2>"
+		"<p style='font-size: 16px; line-height: 1.6;'>Use the 6-digit code below to complete your FreightAxis sign-up.</p>"
+		f"<div style='margin: 24px 0; padding: 18px 24px; background: #ffffff; color: #031227; font-size: 32px; font-weight: 700; letter-spacing: 0.35em; text-align: center; border-radius: 12px;'>{code}</div>"
+		f"<p style='font-size: 14px; color: #cbd5e1;'>This code expires in {SIGNUP_EMAIL_CODE_TTL_MINUTES} minutes.</p>"
+		"<p style='font-size: 14px; color: #cbd5e1;'>If you didn’t request this, you can safely ignore this email.</p>"
+		"</div>"
+	)
+	text_content = (
+		"Verify your email for FreightAxis.\n\n"
+		"Use this 6-digit verification code to complete your sign-up:\n\n"
+		f"{code}\n\n"
+		f"This code expires in {SIGNUP_EMAIL_CODE_TTL_MINUTES} minutes.\n\n"
+		"If you didn’t request this, you can safely ignore this email."
+	)
+
+	smtp_configured = bool(SIGNUP_SMTP_HOST and SIGNUP_SMTP_LOGIN and SIGNUP_SMTP_PASSWORD and SIGNUP_SMTP_FROM_EMAIL)
+	if smtp_configured:
+		try:
+			send_smtp_email(recipient_email, "Your FreightAxis verification code", html_content, text_content)
+			return
+		except Exception as exc:
+			print("[backend] SMTP email send failed, falling back to Resend:", exc)
+			traceback.print_exc()
+
+	if SIGNUP_EMAIL_ALLOW_RESEND_FALLBACK and RESEND_API_KEY:
+		try:
+			send_resend_email(recipient_email, "Your FreightAxis verification code", html_content, text_content)
+			return
+		except Exception as exc:
+			print("[backend] Resend email send failed:", exc)
+			traceback.print_exc()
+
+	if not smtp_configured:
+		raise HTTPException(
+			status_code=503,
+			detail="Email verification is not configured. Please set SMTP environment variables or RESEND_API_KEY.",
+		)
+
+	raise HTTPException(
+		status_code=503,
+		detail="Unable to send verification code email right now. Please try again.",
+	)
+
+
+def send_smtp_email(recipient_email: str, subject: str, html_content: str, text_content: str) -> None:
+	if not SIGNUP_SMTP_HOST or not SIGNUP_SMTP_LOGIN or not SIGNUP_SMTP_PASSWORD or not SIGNUP_SMTP_FROM_EMAIL:
+		raise HTTPException(
+			status_code=503,
+			detail="SMTP email sender is not configured. Please set SIGNUP_SMTP_HOST, SIGNUP_SMTP_LOGIN, SIGNUP_SMTP_PASSWORD, and SIGNUP_SMTP_FROM_EMAIL.",
 		)
 
 	message = EmailMessage()
-	message["Subject"] = "Your FreightAxis verification code"
-	message["From"] = (
-		f"{SIGNUP_SMTP_FROM_NAME} <{SIGNUP_SMTP_FROM_EMAIL}>"
-		if SIGNUP_SMTP_FROM_NAME
-		else SIGNUP_SMTP_FROM_EMAIL
-	)
+	message["Subject"] = subject
+	message["From"] = f"{SIGNUP_SMTP_FROM_NAME or SIGNUP_SMTP_FROM_EMAIL} <{SIGNUP_SMTP_FROM_EMAIL}>"
 	message["To"] = recipient_email
-	message.set_content(
-		"Use this 6-digit verification code to complete your FreightAxis sign-up:\n\n"
-		f"{code}\n\n"
-		f"This code expires in {SIGNUP_EMAIL_CODE_TTL_MINUTES} minutes."
-	)
+	message.set_content(text_content)
+	message.add_alternative(html_content, subtype="html")
 
 	try:
 		with smtplib.SMTP(SIGNUP_SMTP_HOST, SIGNUP_SMTP_PORT, timeout=20) as smtp:
 			smtp.ehlo()
 			smtp.starttls()
+			smtp.ehlo()
 			smtp.login(SIGNUP_SMTP_LOGIN, SIGNUP_SMTP_PASSWORD)
 			smtp.send_message(message)
-	except Exception:
+	except Exception as exc:
+		print("[backend] SMTP email send failed:", exc)
+		traceback.print_exc()
 		raise HTTPException(
 			status_code=503,
-			detail="Unable to send verification code email right now. Please try again.",
+			detail="Unable to send reset email right now. Please try again.",
 		)
+
+
+def send_brevo_email(recipient_email: str, subject: str, html_content: str, text_content: str) -> None:
+	if SIGNUP_EMAIL_ALLOW_RESEND_FALLBACK and RESEND_API_KEY:
+		send_resend_email(recipient_email, subject, html_content, text_content)
+		return
+
+	if not SIGNUP_SMTP_FROM_EMAIL:
+		raise HTTPException(
+			status_code=503,
+			detail="Email sender is not configured. Please set SIGNUP_SMTP_FROM_EMAIL or RESEND_API_KEY.",
+		)
+
+	if not BREVO_API_KEY:
+		send_smtp_email(recipient_email, subject, html_content, text_content)
+		return
+
+	payload = json.dumps(
+		{
+			"sender": {
+				"name": SIGNUP_SMTP_FROM_NAME or "FreightAxis",
+				"email": SIGNUP_SMTP_FROM_EMAIL,
+			},
+			"to": [{"email": recipient_email}],
+			"subject": subject,
+			"htmlContent": html_content,
+			"textContent": text_content,
+		}
+	).encode("utf-8")
+
+	request = UrlRequest(
+		"https://api.brevo.com/v3/smtp/email",
+		data=payload,
+		headers={
+			"Content-Type": "application/json",
+			"Accept": "application/json",
+			"api-key": BREVO_API_KEY,
+		},
+		method="POST",
+	)
+
+	try:
+		response = urlopen(request, timeout=20)
+		status_code = response.getcode()
+		if status_code >= 400:
+			print(f"[backend] Brevo HTTP send failed status={status_code}")
+			raise HTTPException(
+				status_code=503,
+				detail="Unable to send reset email right now. Please try again.",
+			)
+	except URLError as exc:
+		print("[backend] Brevo HTTP send failed:", exc)
+		traceback.print_exc()
+		raise HTTPException(
+			status_code=503,
+			detail="Unable to send reset email right now. Please try again.",
+		)
+
+
+def generate_password_reset_token() -> str:
+	return uuid4().hex
+
+
+def resolve_frontend_base_url(origin: str | None) -> str:
+	if origin:
+		parsed = urlparse(origin)
+		if parsed.scheme in {"http", "https"} and parsed.hostname:
+			port = f":{parsed.port}" if parsed.port and parsed.port not in {80, 443} else ""
+			return f"{parsed.scheme}://{parsed.hostname}{port}"
+
+	if FRONTEND_BASE_URL:
+		return FRONTEND_BASE_URL.rstrip("/")
+
+	return "https://lynkxpress.com"
+
+
+def send_password_reset_email(recipient_email: str, token: str, role: str, frontend_base_url: str) -> None:
+	reset_link = f"{frontend_base_url.rstrip('/')}/reset-password?token={token}&role={role}"
+	subject = "Reset your FreightAxis password"
+	html_content = (
+		"<p>You requested a password reset for your FreightAxis account.</p>"
+		f"<p><a href=\"{reset_link}\">Click here to reset your password</a></p>"
+		"<p>If you did not request this, you can ignore this email.</p>"
+	)
+	text_content = (
+		"You requested a password reset for your FreightAxis account.\n\n"
+		f"Visit the link below to reset your password:\n{reset_link}\n\n"
+		"If you did not request this, you can ignore this email."
+	)
+	send_brevo_email(recipient_email, subject, html_content, text_content)
 
 
 def should_expose_signup_code_for_debug() -> bool:
@@ -1024,7 +1483,25 @@ def verify_and_consume_signup_email_code(
 	db: Session,
 	*,
 	email: str,
-	role: Literal["client", "carrier"],
+	role: Literal["client", "carrier", "driver"],
+	verification_code: str,
+) -> None:
+	verify_signup_email_code(db, email=email, role=role, verification_code=verification_code)
+	record = db.scalar(
+		select(SignupEmailVerificationModel).where(
+			SignupEmailVerificationModel.email == email,
+			SignupEmailVerificationModel.role == role,
+		)
+	)
+	if record is not None:
+		db.delete(record)
+
+
+def verify_signup_email_code(
+	db: Session,
+	*,
+	email: str,
+	role: Literal["client", "carrier", "driver"],
 	verification_code: str,
 ) -> None:
 	record = db.scalar(
@@ -1036,7 +1513,7 @@ def verify_and_consume_signup_email_code(
 	if record is None:
 		raise HTTPException(status_code=400, detail="Verification code required. Request a new 6-digit code.")
 
-	if record.expires_at < utc_now():
+	if normalize_datetime_to_utc(record.expires_at) < utc_now():
 		db.delete(record)
 		db.commit()
 		raise HTTPException(status_code=400, detail="Verification code expired. Request a new code.")
@@ -1044,11 +1521,9 @@ def verify_and_consume_signup_email_code(
 	if not verify_password(verification_code, record.code_hash):
 		raise HTTPException(status_code=400, detail="Invalid verification code.")
 
-	db.delete(record)
 
-
-def plan_for_role(role: str) -> Literal["client", "carrier"]:
-	return "carrier" if role == "carrier" else "client"
+def plan_for_role(role: str) -> Literal["client", "carrier", "driver"]:
+	return "carrier" if role == "carrier" else "client" if role != "driver" else "driver"
 
 
 def stripe_price_id_for_role(role: str) -> str:
@@ -1094,6 +1569,17 @@ def user_to_auth_session(user: UserModel) -> AuthSessionResponse:
 	)
 
 
+def user_to_signup_application(user: UserModel) -> SignupApplicationResponse:
+	return SignupApplicationResponse(
+		role=user.role,  # type: ignore[arg-type]
+		full_name=user.full_name,
+		company_name=user.company_name,
+		email=user.email,
+		approval_status=cast(Literal["pending_review", "active", "rejected"], user.approval_status),
+		created_at=user.created_at,
+	)
+
+
 def to_carrier_settings_response(settings: CarrierSettingsModel) -> CarrierSettingsResponse:
 	return CarrierSettingsResponse(
 		available_trucks=settings.available_trucks,
@@ -1132,6 +1618,32 @@ def user_to_auth_profile(user: UserModel, settings: CarrierSettingsModel | None)
 		subscription_plan=user.subscription_plan,
 		subscription_current_period_end=user.subscription_current_period_end,
 		carrier_profile=to_carrier_settings_response(settings) if settings else None,
+	)
+
+
+def driver_application_to_response(user: UserModel, profile: DriverApplicationModel) -> DriverApplicationProfileResponse:
+	temporary_resume = get_temporary_upload(profile.resume_temporary_upload_id)
+	return DriverApplicationProfileResponse(
+		email=user.email,
+		first_name=profile.first_name,
+		last_name=profile.last_name,
+		phone=profile.phone,
+		address=profile.address,
+		zip_code=profile.zip_code,
+		cdl_information=profile.cdl_information,
+		years_experience=profile.years_experience,
+		qualifications=profile.qualifications,
+		endorsements=profile.endorsements,
+		availability_notes=profile.availability_notes,
+		truck_type=profile.truck_type,
+		trailer_type=profile.trailer_type,
+		capacity=profile.capacity,
+		vehicle_information=profile.vehicle_information,
+		availability_status=profile.availability_status,  # type: ignore[arg-type]
+		resume_name=profile.resume_name,
+		resume_mime_type=temporary_resume.mime_type if temporary_resume else profile.resume_mime_type,
+		resume_base64=temporary_resume.file_base64 if temporary_resume else profile.resume_base64,
+		updated_at=profile.updated_at,
 	)
 
 
@@ -1328,6 +1840,7 @@ def serialize_carrier_driver(driver: CarrierDriverModel) -> CarrierDriverSummary
 
 
 def serialize_driver_document(record: DriverDocumentModel) -> DriverDocumentRecordResponse:
+	temporary_upload = get_temporary_upload(record.temporary_upload_id)
 	return DriverDocumentRecordResponse(
 		id=record.id,
 		driver_id=record.driver_id,
@@ -1338,6 +1851,8 @@ def serialize_driver_document(record: DriverDocumentModel) -> DriverDocumentReco
 		document_type=record.document_type,
 		notes=record.notes,
 		content_text=record.content_text,
+		file_mime_type=temporary_upload.mime_type if temporary_upload else record.file_mime_type,
+		file_base64=temporary_upload.file_base64 if temporary_upload else record.file_base64,
 		created_at=record.created_at,
 	)
 
@@ -1592,6 +2107,123 @@ def validate_signup_identity_document(
 	return document_name, mime_type, base64.b64encode(document_bytes).decode("ascii")
 
 
+def didit_vendor_data(role: str, email: str) -> str:
+	return f"freightaxis:{role}:{normalize_email(email)}"
+
+
+def create_didit_session(*, full_name: str, email: str, role: Literal["client", "carrier", "driver"], callback: str) -> DiditSessionResponse:
+	if not DIDIT_API_KEY or not DIDIT_WORKFLOW_ID:
+		raise HTTPException(status_code=503, detail="Identity verification is not configured. Please try again later.")
+
+	name_parts = full_name.strip().split(maxsplit=1)
+	payload = {
+		"workflow_id": DIDIT_WORKFLOW_ID,
+		"vendor_data": didit_vendor_data(role, email),
+		"callback": callback,
+		"callback_method": "both",
+		"metadata": {"role": role, "email": normalize_email(email)},
+		"contact_details": {"email": normalize_email(email), "email_lang": "en", "send_notification_emails": False},
+		"expected_details": {"first_name": name_parts[0], "last_name": name_parts[1] if len(name_parts) > 1 else ""},
+	}
+	request = UrlRequest(
+		f"{DIDIT_API_BASE_URL}/session/",
+		data=json.dumps(payload).encode("utf-8"),
+		headers={"x-api-key": DIDIT_API_KEY, "Content-Type": "application/json", "Accept": "application/json"},
+		method="POST",
+	)
+	try:
+		with urlopen(request, timeout=15) as response:
+			result = json.loads(response.read().decode("utf-8"))
+	except (URLError, TimeoutError, ValueError):
+		raise HTTPException(status_code=503, detail="Unable to start identity verification. Please try again later.")
+
+	session_id = result.get("session_id") if isinstance(result, dict) else None
+	url = result.get("url") if isinstance(result, dict) else None
+	if not isinstance(session_id, str) or not isinstance(url, str):
+		raise HTTPException(status_code=503, detail="Identity verification returned an invalid session. Please try again later.")
+	return DiditSessionResponse(session_id=session_id, url=url)
+
+
+def verify_didit_session(session_id: str, *, email: str, role: Literal["client", "carrier", "driver"]) -> str:
+	if not DIDIT_API_KEY or not DIDIT_WORKFLOW_ID:
+		raise HTTPException(status_code=503, detail="Identity verification is not configured. Please try again later.")
+
+	request = UrlRequest(
+		f"{DIDIT_API_BASE_URL}/session/{quote(session_id.strip(), safe='')}/decision/",
+		headers={"x-api-key": DIDIT_API_KEY, "Accept": "application/json"},
+	)
+	try:
+		with urlopen(request, timeout=15) as response:
+			decision = json.loads(response.read().decode("utf-8"))
+	except (URLError, TimeoutError, ValueError):
+		raise HTTPException(status_code=503, detail="Unable to confirm identity verification. Please try again later.")
+
+	if not isinstance(decision, dict) or decision.get("status", "").strip().lower() != "approved":
+		raise HTTPException(status_code=400, detail="Complete identity verification before creating your account.")
+	if decision.get("workflow_id") != DIDIT_WORKFLOW_ID:
+		raise HTTPException(status_code=400, detail="Identity verification does not match this signup workflow.")
+	if decision.get("vendor_data") != didit_vendor_data(role, email):
+		raise HTTPException(status_code=400, detail="Identity verification does not match this signup account.")
+	return session_id.strip()
+
+
+def store_temporary_upload(file_name: str, mime_type: str, file_base64: str) -> str:
+	upload_id = str(uuid4())
+	with TemporaryUploadSession() as temp_db:
+		temp_db.add(
+			TemporaryUploadModel(
+				id=upload_id,
+				file_name=file_name,
+				mime_type=mime_type,
+				file_base64=file_base64,
+				created_at=utc_now(),
+			)
+		)
+		temp_db.commit()
+	return upload_id
+
+
+def get_temporary_upload(upload_id: str | None) -> TemporaryUploadModel | None:
+	if not upload_id:
+		return None
+	with TemporaryUploadSession() as temp_db:
+		return temp_db.get(TemporaryUploadModel, upload_id)
+
+
+def migrate_legacy_uploads_to_temporary_storage() -> None:
+	with get_session() as db:
+		changed = False
+		for record in db.scalars(select(DriverDocumentModel)).all():
+			if record.file_base64 and not record.temporary_upload_id:
+				record.temporary_upload_id = store_temporary_upload(
+					record.document_name,
+					record.file_mime_type or "application/octet-stream",
+					record.file_base64,
+				)
+				record.file_base64 = None
+				changed = True
+		for profile in db.scalars(select(DriverApplicationModel)).all():
+			if profile.resume_base64 and not profile.resume_temporary_upload_id:
+				profile.resume_temporary_upload_id = store_temporary_upload(
+					profile.resume_name or "resume",
+					profile.resume_mime_type or "application/octet-stream",
+					profile.resume_base64,
+				)
+				profile.resume_base64 = None
+				changed = True
+		for record in db.scalars(select(SignupIdentityDocumentModel)).all():
+			if record.document_base64 and not record.temporary_upload_id:
+				record.temporary_upload_id = store_temporary_upload(
+					record.document_name,
+					record.document_mime_type,
+					record.document_base64,
+				)
+				record.document_base64 = ""
+				changed = True
+		if changed:
+			db.commit()
+
+
 def require_admin_api_key(x_admin_key: str | None) -> None:
 	if not ADMIN_API_KEY:
 		raise HTTPException(status_code=503, detail="Admin access is not configured.")
@@ -1618,6 +2250,7 @@ def serialize_signup_identity_submission_detail(
 	record: SignupIdentityDocumentModel,
 ) -> SignupIdentitySubmissionDetailResponse:
 	summary = serialize_signup_identity_submission_summary(record)
+	temporary_upload = get_temporary_upload(record.temporary_upload_id)
 	return SignupIdentitySubmissionDetailResponse(
 		id=summary.id,
 		user_id=summary.user_id,
@@ -1627,7 +2260,7 @@ def serialize_signup_identity_submission_detail(
 		document_name=summary.document_name,
 		document_mime_type=summary.document_mime_type,
 		created_at=summary.created_at,
-		document_base64=record.document_base64,
+		document_base64=temporary_upload.file_base64 if temporary_upload else record.document_base64,
 	)
 
 
@@ -1675,6 +2308,7 @@ def ensure_compatible_schema() -> None:
 		"subscription_status": "VARCHAR(32)",
 		"subscription_plan": "VARCHAR(16)",
 		"subscription_current_period_end": "DATETIME",
+		"approval_status": "VARCHAR(24)",
 	}
 	shipment_columns.update(
 		{
@@ -1705,14 +2339,34 @@ def ensure_compatible_schema() -> None:
 	carrier_driver_columns = {
 		"last_tracking_at": "DATETIME",
 	}
+	driver_document_columns = {
+		"file_mime_type": "VARCHAR(100)",
+		"file_base64": "TEXT",
+		"temporary_upload_id": "VARCHAR(64)",
+	}
+	driver_application_columns = {
+		"resume_temporary_upload_id": "VARCHAR(64)",
+	}
+	signup_identity_document_columns = {
+		"temporary_upload_id": "VARCHAR(64)",
+		"persona_inquiry_id": "VARCHAR(80)",
+		"didit_session_id": "VARCHAR(120)",
+	}
 	with engine.begin() as conn:
 		add_missing_columns(conn, "shipments", shipment_columns)
 		add_missing_columns(conn, "users", user_columns)
 		add_missing_columns(conn, "carrier_settings", carrier_settings_columns)
 		add_missing_columns(conn, "carrier_drivers", carrier_driver_columns)
+		add_missing_columns(conn, "driver_documents", driver_document_columns)
+		add_missing_columns(conn, "driver_applications", driver_application_columns)
+		add_missing_columns(conn, "signup_identity_documents", signup_identity_document_columns)
 
 		try:
 			conn.execute(text("UPDATE users SET updated_at = created_at WHERE updated_at IS NULL"))
+		except Exception:
+			pass
+		try:
+			conn.execute(text("UPDATE users SET approval_status = 'active' WHERE approval_status IS NULL"))
 		except Exception:
 			pass
 
@@ -2975,6 +3629,16 @@ def health() -> dict[str, str]:
 	return {"status": "ok", "database": DATABASE_URL.split(":", 1)[0]}
 
 
+@app.post("/auth/identity-verification/didit-session", response_model=DiditSessionResponse)
+def start_didit_session(payload: DiditSessionRequest, request: Request) -> DiditSessionResponse:
+	full_name = payload.full_name.strip()
+	email = normalize_email(payload.email)
+	if not is_valid_email(email):
+		raise HTTPException(status_code=400, detail="Enter a valid email address.")
+	callback = f"{resolve_frontend_base_url(request.headers.get('origin')).rstrip('/')}/"
+	return create_didit_session(full_name=full_name, email=email, role=payload.role, callback=callback)
+
+
 @app.post("/auth/signup/request-verification-code", response_model=AuthSignupVerificationCodeResponse)
 def request_signup_verification_code(payload: AuthSignupVerificationCodeRequest) -> AuthSignupVerificationCodeResponse:
 	email = normalize_email(payload.email)
@@ -2988,7 +3652,11 @@ def request_signup_verification_code(payload: AuthSignupVerificationCodeRequest)
 			raise HTTPException(status_code=409, detail="An account already exists for this email and role.")
 
 	code = generate_signup_verification_code()
-	send_signup_verification_email(email, code)
+	try:
+		send_signup_verification_email(email, code)
+		email_sent = True
+	except HTTPException:
+		email_sent = False
 
 	with get_session() as db:
 		now = utc_now()
@@ -3017,14 +3685,98 @@ def request_signup_verification_code(payload: AuthSignupVerificationCodeRequest)
 
 		db.commit()
 
+	if not email_sent:
+		raise HTTPException(status_code=503, detail="Unable to send verification code email right now. Please try again.")
+
 	return AuthSignupVerificationCodeResponse(
 		detail="Verification code sent.",
-		debug_code=code if should_expose_signup_code_for_debug() else None,
+		debug_code=None,
 	)
 
 
-@app.post("/auth/signup", response_model=AuthSessionResponse)
-def signup(payload: AuthSignupRequest) -> AuthSessionResponse:
+@app.post("/auth/signup/verify-email-code", response_model=AuthSignupVerificationCodeResponse)
+def verify_signup_email_verification_code(payload: AuthSignupVerifyEmailCodeRequest) -> AuthSignupVerificationCodeResponse:
+	email = normalize_email(payload.email)
+	if not is_valid_email(email):
+		raise HTTPException(status_code=400, detail="Enter a valid email address.")
+	with get_session() as db:
+		verify_signup_email_code(
+			db,
+			email=email,
+			role=payload.role,
+			verification_code=payload.email_verification_code.strip(),
+		)
+	return AuthSignupVerificationCodeResponse(detail="Email verified.")
+
+
+@app.post("/auth/password-reset/request", response_model=AuthPasswordResetResponse)
+def request_password_reset(payload: AuthPasswordResetRequest, request: Request) -> AuthPasswordResetResponse:
+	email = normalize_email(payload.email)
+	if not is_valid_email(email):
+		raise HTTPException(status_code=400, detail="Enter a valid email address.")
+	role = payload.role
+	frontend_base_url = resolve_frontend_base_url(request.headers.get("origin"))
+	with get_session() as db:
+		user = db.scalar(select(UserModel).where(UserModel.email == email, UserModel.role == role))
+		if user is None:
+			return AuthPasswordResetResponse(detail="If an account exists for that email, reset instructions have been sent.")
+		token = generate_password_reset_token()
+		try:
+			send_password_reset_email(email, token, role, frontend_base_url)
+		except HTTPException:
+			# avoid leaking whether email exists or not
+			return AuthPasswordResetResponse(detail="If an account exists for that email, reset instructions have been sent.")
+
+		record = db.scalar(select(PasswordResetTokenModel).where(PasswordResetTokenModel.user_id == user.id))
+		now = utc_now()
+		expires_at = now + timedelta(minutes=max(PASSWORD_RESET_TOKEN_TTL_MINUTES, 5))
+		if record is None:
+			record = PasswordResetTokenModel(
+				id=str(uuid4()),
+				user_id=user.id,
+				token_hash=hash_password(token),
+				expires_at=expires_at,
+				used=False,
+				created_at=now,
+			)
+			db.add(record)
+		else:
+			record.token_hash = hash_password(token)
+			record.expires_at = expires_at
+			record.used = False
+			record.created_at = now
+		db.commit()
+		return AuthPasswordResetResponse(detail="If an account exists for that email, reset instructions have been sent.")
+
+
+@app.post("/auth/password-reset/confirm", response_model=AuthPasswordResetResponse)
+def confirm_password_reset(payload: AuthPasswordResetConfirmRequest) -> AuthPasswordResetResponse:
+	email = normalize_email(payload.email)
+	if not is_valid_email(email):
+		raise HTTPException(status_code=400, detail="Enter a valid email address.")
+	if len(payload.new_password) < 8:
+		raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+	role = payload.role
+	with get_session() as db:
+		user = db.scalar(select(UserModel).where(UserModel.email == email, UserModel.role == role))
+		if user is None:
+			raise HTTPException(status_code=400, detail="Invalid token or password reset request.")
+		record = db.scalar(
+			select(PasswordResetTokenModel)
+			.where(PasswordResetTokenModel.user_id == user.id, PasswordResetTokenModel.used == False, PasswordResetTokenModel.expires_at >= utc_now())
+		)
+		if record is None or not verify_password(payload.token, record.token_hash):
+			raise HTTPException(status_code=400, detail="Invalid token or password reset request.")
+		user.password_hash = hash_password(payload.new_password)
+		user.updated_at = utc_now()
+		record.used = True
+		db.commit()
+		return AuthPasswordResetResponse(detail="Password has been reset.")
+
+
+@app.post("/auth/signup", response_model=SignupApplicationResponse)
+def signup(payload: AuthSignupRequest, request: Request) -> SignupApplicationResponse:
+	enforce_auth_rate_limit(request, "signup")
 	full_name = payload.full_name.strip()
 	company_name = payload.company_name.strip()
 	email = normalize_email(payload.email)
@@ -3032,11 +3784,11 @@ def signup(payload: AuthSignupRequest) -> AuthSessionResponse:
 	verification_code = payload.email_verification_code.strip()
 	role = payload.role
 	is_carrier = role == "carrier"
-	id_document_name, id_document_mime_type, id_document_base64 = validate_signup_identity_document(
-		payload.id_document_name,
-		payload.id_document_mime_type,
-		payload.id_document_base64,
-	)
+	didit_session_id: str | None = None
+	if role in {"client", "carrier", "driver"}:
+		if not payload.didit_session_id:
+			raise HTTPException(status_code=400, detail="Complete identity verification before creating your account.")
+		didit_session_id = verify_didit_session(payload.didit_session_id, email=email, role=role)
 	tax_id_raw = (payload.tax_id or "")
 	dot_number_raw = (payload.dot_number or "")
 	normalized_tax_id = "".join(ch for ch in tax_id_raw if ch.isdigit())
@@ -3086,13 +3838,14 @@ def signup(payload: AuthSignupRequest) -> AuthSessionResponse:
 			email=email,
 			password_hash=hash_password(password),
 			role=role,
-			phone=None,
+			phone=(payload.phone or "").strip() or None,
 			address=None,
-			bio=None,
+			bio=(payload.bio or "").strip() or None,
 			stripe_customer_id=None,
 			subscription_status="inactive",
 			subscription_plan=plan_for_role(role),
 			subscription_current_period_end=None,
+			approval_status="pending_review",
 			created_at=utc_now(),
 			updated_at=utc_now(),
 		)
@@ -3100,18 +3853,22 @@ def signup(payload: AuthSignupRequest) -> AuthSessionResponse:
 		db.commit()
 		db.refresh(user)
 
-		submission = SignupIdentityDocumentModel(
-			id=str(uuid4()),
-			user_id=user.id,
-			role=user.role,
-			full_name=user.full_name,
-			company_name=user.company_name,
-			document_name=id_document_name,
-			document_mime_type=id_document_mime_type,
-			document_base64=id_document_base64,
-			created_at=utc_now(),
-		)
-		db.add(submission)
+		if didit_session_id:
+			submission = SignupIdentityDocumentModel(
+				id=str(uuid4()),
+				user_id=user.id,
+				role=user.role,
+				full_name=user.full_name,
+				company_name=user.company_name,
+				document_name=f"Didit session {didit_session_id}",
+				document_mime_type="application/json",
+				document_base64="",
+				temporary_upload_id=None,
+				persona_inquiry_id=None,
+				didit_session_id=didit_session_id,
+				created_at=utc_now(),
+			)
+			db.add(submission)
 
 		if is_carrier:
 			settings = CarrierSettingsModel(
@@ -3135,7 +3892,55 @@ def signup(payload: AuthSignupRequest) -> AuthSessionResponse:
 			db.add(settings)
 
 		db.commit()
-		return user_to_auth_session(user)
+		return user_to_signup_application(user)
+
+
+@app.get("/admin/signup-applications", response_model=list[SignupApplicationSummaryResponse])
+def list_signup_applications(
+	x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+) -> list[SignupApplicationSummaryResponse]:
+	require_admin_api_key(x_admin_key)
+	with get_session() as db:
+		users = db.scalars(select(UserModel).order_by(UserModel.created_at.desc())).all()
+		return [SignupApplicationSummaryResponse(user_id=user.id, **user_to_signup_application(user).model_dump()) for user in users]
+
+
+@app.post("/admin/signup-applications/{user_id}/approve", response_model=SignupApplicationResponse)
+def approve_signup_application(
+	user_id: str,
+	x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+) -> SignupApplicationResponse:
+	require_admin_api_key(x_admin_key)
+	with get_session() as db:
+		user = db.scalar(select(UserModel).where(UserModel.id == user_id))
+		if user is None:
+			raise HTTPException(status_code=404, detail="Signup application not found.")
+		if user.approval_status == "rejected":
+			raise HTTPException(status_code=409, detail="Rejected applications cannot be approved.")
+		user.approval_status = "active"
+		user.updated_at = utc_now()
+		db.commit()
+		db.refresh(user)
+		return user_to_signup_application(user)
+
+
+@app.post("/admin/signup-applications/{user_id}/reject", response_model=SignupApplicationResponse)
+def reject_signup_application(
+	user_id: str,
+	x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+) -> SignupApplicationResponse:
+	require_admin_api_key(x_admin_key)
+	with get_session() as db:
+		user = db.scalar(select(UserModel).where(UserModel.id == user_id))
+		if user is None:
+			raise HTTPException(status_code=404, detail="Signup application not found.")
+		if user.approval_status == "active":
+			raise HTTPException(status_code=409, detail="Active applications cannot be rejected.")
+		user.approval_status = "rejected"
+		user.updated_at = utc_now()
+		db.commit()
+		db.refresh(user)
+		return user_to_signup_application(user)
 
 
 @app.get("/admin/signup-id-submissions", response_model=list[SignupIdentitySubmissionSummaryResponse])
@@ -3164,7 +3969,8 @@ def get_signup_id_submission(
 
 
 @app.post("/auth/login", response_model=AuthSessionResponse)
-def login(payload: AuthLoginRequest) -> AuthSessionResponse:
+def login(payload: AuthLoginRequest, response: Response, request: Request) -> AuthSessionResponse:
+	enforce_auth_rate_limit(request, "login")
 	email = normalize_email(payload.email)
 	password = payload.password
 	role = payload.role
@@ -3173,8 +3979,22 @@ def login(payload: AuthLoginRequest) -> AuthSessionResponse:
 		user = db.scalar(select(UserModel).where(UserModel.email == email, UserModel.role == role))
 		if user is None or not verify_password(password, user.password_hash):
 			raise HTTPException(status_code=401, detail="Invalid credentials for the selected role.")
+		if user.approval_status == "pending_review":
+			raise HTTPException(status_code=403, detail="Your application is pending review.")
+		if user.approval_status == "rejected":
+			raise HTTPException(status_code=403, detail="Your application was not approved.")
 
+		set_auth_session_cookie(response, user.id)
 		return user_to_auth_session(user)
+
+
+@app.post("/auth/logout")
+def logout(response: Response) -> dict[str, str]:
+	response.delete_cookie(
+		key=AUTH_SESSION_COOKIE_NAME,
+		path="/",
+	)
+	return {"detail": "Signed out."}
 
 
 def apply_user_profile_updates(user: UserModel, payload: AuthProfileUpdateRequest) -> None:
@@ -3341,6 +4161,75 @@ def update_profile(
 			db.refresh(settings)
 
 		return user_to_auth_profile(user, settings)
+
+
+@app.get("/driver-application/profile", response_model=DriverApplicationProfileResponse)
+def get_driver_application_profile(email: str = Query(min_length=4, max_length=320)) -> DriverApplicationProfileResponse:
+	with get_session() as db:
+		user = get_user_by_identity(db, email, "driver", require_subscription=False)
+		profile = db.scalar(select(DriverApplicationModel).where(DriverApplicationModel.user_id == user.id))
+		if profile is None:
+			first_name, _, last_name = user.full_name.strip().partition(" ")
+			profile = DriverApplicationModel(
+				user_id=user.id,
+				first_name=first_name or "Driver",
+				last_name=last_name or "Profile",
+				phone=user.phone or "Not provided",
+				address=user.address or "Not provided",
+				zip_code="Not set",
+				cdl_information="Pending",
+				years_experience=0,
+				qualifications="",
+				endorsements="",
+				availability_notes="",
+				truck_type="",
+				trailer_type="",
+				capacity="",
+				vehicle_information="",
+				availability_status="available",
+				updated_at=utc_now(),
+			)
+			db.add(profile)
+			db.commit()
+			db.refresh(profile)
+		return driver_application_to_response(user, profile)
+
+
+@app.put("/driver-application/profile", response_model=DriverApplicationProfileResponse)
+def update_driver_application_profile(
+	payload: DriverApplicationProfilePayload,
+	email: str = Query(min_length=4, max_length=320),
+) -> DriverApplicationProfileResponse:
+	with get_session() as db:
+		user = get_user_by_identity(db, email, "driver", require_subscription=False)
+		profile = db.scalar(select(DriverApplicationModel).where(DriverApplicationModel.user_id == user.id))
+		profile_values = payload.model_dump()
+		resume_base64 = profile_values.get("resume_base64")
+		if resume_base64:
+			profile_values["resume_base64"] = None
+			profile_values["resume_temporary_upload_id"] = store_temporary_upload(
+				profile_values.get("resume_name") or "resume",
+				profile_values.get("resume_mime_type") or "application/octet-stream",
+				resume_base64,
+			)
+		else:
+			profile_values["resume_temporary_upload_id"] = None
+		if profile is None:
+			profile = DriverApplicationModel(user_id=user.id, updated_at=utc_now(), **profile_values)
+			db.add(profile)
+		else:
+			for field_name, value in profile_values.items():
+				setattr(profile, field_name, value)
+			profile.updated_at = utc_now()
+
+		user.full_name = f"{payload.first_name.strip()} {payload.last_name.strip()}".strip()
+		user.phone = payload.phone.strip()
+		user.address = payload.address.strip()
+		user.updated_at = utc_now()
+		db.add(user)
+		db.commit()
+		db.refresh(profile)
+		return driver_application_to_response(user, profile)
 
 
 @app.get("/billing/subscription-plans", response_model=list[BillingPlanResponse])
@@ -3976,6 +4865,15 @@ def upload_driver_document(payload: DriverDocumentUploadRequest) -> DriverDocume
 		if carrier_user is None:
 			raise HTTPException(status_code=404, detail="Carrier account not found for this driver.")
 		require_subscription_active(carrier_user)
+		temporary_upload_id = (
+			store_temporary_upload(
+				payload.document_name.strip(),
+				payload.file_mime_type.strip(),
+				payload.file_base64.strip(),
+			)
+			if payload.file_mime_type and payload.file_base64
+			else None
+		)
 
 		record = DriverDocumentModel(
 			id=str(uuid4()),
@@ -3988,6 +4886,9 @@ def upload_driver_document(payload: DriverDocumentUploadRequest) -> DriverDocume
 			document_type=payload.document_type.strip().lower(),
 			notes=payload.notes.strip() if payload.notes else None,
 			content_text=payload.content_text.strip() if payload.content_text else None,
+			file_mime_type=payload.file_mime_type.strip() if payload.file_mime_type else None,
+			file_base64=None,
+			temporary_upload_id=temporary_upload_id,
 			created_at=utc_now(),
 		)
 		db.add(record)
@@ -4268,7 +5169,9 @@ def get_carrier_detail(carrier_id: str) -> CarrierDetailResponse:
 @app.on_event("startup")
 def startup_event() -> None:
 	Base.metadata.create_all(bind=engine)
+	TemporaryUploadBase.metadata.create_all(bind=temporary_upload_engine)
 	ensure_compatible_schema()
+	migrate_legacy_uploads_to_temporary_storage()
 
 
 @app.get("/shipments", response_model=list[ShipmentRecord])
@@ -4989,37 +5892,29 @@ def confirm_payment(
 			raise HTTPException(status_code=409, detail="Quote must be accepted before payment can be captured.")
 		if not shipment.carrier_name:
 			raise HTTPException(status_code=409, detail="No carrier accepted this shipment yet.")
+		if not checkout_session_id:
+			raise HTTPException(status_code=400, detail="checkout_session_id is required to confirm shipment payment.")
 
 		paid_at = utc_now()
 
-		if checkout_session_id:
-			require_stripe_ready()
-			session = stripe.checkout.Session.retrieve(  # type: ignore[union-attr]
-				checkout_session_id,
-				expand=["payment_intent"],
-			)
-			session_metadata = dict(getattr(session, "metadata", {}) or {})
-			if session_metadata.get("shipment_id") != shipment.id:
-				raise HTTPException(status_code=403, detail="Checkout session does not belong to this shipment.")
-			if getattr(session, "payment_status", "") != "paid":
-				raise HTTPException(status_code=409, detail="Checkout payment is not completed yet.")
-			payment_intent = getattr(session, "payment_intent", None)
-			if isinstance(payment_intent, str) and payment_intent:
-				shipment.payment_intent_id = payment_intent
-			elif payment_intent is not None and getattr(payment_intent, "id", None):
-				shipment.payment_intent_id = str(payment_intent.id)
-				created_epoch = getattr(payment_intent, "created", None)
-				if isinstance(created_epoch, int):
-					paid_at = datetime.fromtimestamp(created_epoch, tz=timezone.utc)
-		else:
-			if shipment.payment_intent_id is None:
-				create_or_update_payment_intent_for_shipment(db, shipment)
-
-			if stripe is not None and STRIPE_SECRET_KEY and shipment.payment_intent_id and not shipment.payment_intent_id.startswith("pi_test_"):
-				stripe.PaymentIntent.confirm(  # type: ignore[union-attr]
-					shipment.payment_intent_id,
-					payment_method="pm_card_visa",
-				)
+		require_stripe_ready()
+		session = stripe.checkout.Session.retrieve(  # type: ignore[union-attr]
+			checkout_session_id,
+			expand=["payment_intent"],
+		)
+		session_metadata = dict(getattr(session, "metadata", {}) or {})
+		if session_metadata.get("shipment_id") != shipment.id:
+			raise HTTPException(status_code=403, detail="Checkout session does not belong to this shipment.")
+		if getattr(session, "payment_status", "") != "paid":
+			raise HTTPException(status_code=409, detail="Checkout payment is not completed yet.")
+		payment_intent = getattr(session, "payment_intent", None)
+		if isinstance(payment_intent, str) and payment_intent:
+			shipment.payment_intent_id = payment_intent
+		elif payment_intent is not None and getattr(payment_intent, "id", None):
+			shipment.payment_intent_id = str(payment_intent.id)
+			created_epoch = getattr(payment_intent, "created", None)
+			if isinstance(created_epoch, int):
+				paid_at = datetime.fromtimestamp(created_epoch, tz=timezone.utc)
 
 		shipment.payment_status = "paid"
 		shipment.status = ShipmentStatus.active.value
@@ -5177,7 +6072,12 @@ def update_status(
 		require_subscription_for_actor(db, role, name)
 		shipment = get_shipment_model(db, shipment_id)
 		ensure_carrier_assigned(shipment, name)
-		if shipment.status not in {ShipmentStatus.active.value, ShipmentStatus.in_transit.value} and payload.status != ShipmentStatus.delivered:
+		if payload.status == ShipmentStatus.delivered:
+			if shipment.status not in {ShipmentStatus.active.value, ShipmentStatus.in_transit.value}:
+				raise HTTPException(status_code=409, detail="Shipment must be active before it can be marked delivered.")
+			if shipment.payment_status != "paid" or shipment.quote_status != QUOTE_STATUS_PAID:
+				raise HTTPException(status_code=409, detail="Shipment payment must be completed before marking delivered.")
+		elif shipment.status not in {ShipmentStatus.active.value, ShipmentStatus.in_transit.value}:
 			raise HTTPException(status_code=409, detail="Shipment must be active before carrier tracking updates.")
 
 		next_status = payload.status.value

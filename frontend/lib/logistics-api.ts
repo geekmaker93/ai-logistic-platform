@@ -11,7 +11,7 @@ export type ShipmentStatus =
 export type OptimizationMode = "fastest" | "fuel_efficient" | "lowest_cost" | "weather_safe" | "eco";
 export type ActorContext = { role: "client" | "carrier"; displayName: string };
 
-export type AuthRole = "client" | "carrier";
+export type AuthRole = "client" | "carrier" | "driver";
 
 export type AuthSession = {
   role: AuthRole;
@@ -24,6 +24,15 @@ export type AuthSession = {
   subscription_status: string | null;
   subscription_plan: string | null;
   subscription_current_period_end: string | null;
+};
+
+export type SignupApplication = {
+  role: AuthRole;
+  full_name: string;
+  company_name: string;
+  email: string;
+  approval_status: "pending_review" | "active" | "rejected";
+  created_at: string;
 };
 
 export type CarrierSettings = {
@@ -60,6 +69,29 @@ export type AuthProfile = {
   subscription_plan: string | null;
   subscription_current_period_end: string | null;
   carrier_profile: CarrierSettings | null;
+};
+
+export type DriverApplicationProfile = {
+  email: string;
+  first_name: string;
+  last_name: string;
+  phone: string;
+  address: string;
+  zip_code: string;
+  cdl_information: string;
+  years_experience: number;
+  qualifications: string;
+  endorsements: string;
+  availability_notes: string;
+  truck_type: string;
+  trailer_type: string;
+  capacity: string;
+  vehicle_information: string;
+  availability_status: "available" | "on_load" | "unavailable";
+  resume_name: string | null;
+  resume_mime_type: string | null;
+  resume_base64: string | null;
+  updated_at: string;
 };
 
 export type BillingPlan = {
@@ -306,6 +338,8 @@ export type DriverDocumentRecord = {
   document_type: string;
   notes: string | null;
   content_text: string | null;
+  file_mime_type: string | null;
+  file_base64: string | null;
   created_at: string;
 };
 
@@ -364,7 +398,18 @@ export type ClientCarrierHistoryItem = {
   would_use_again: boolean | null;
 };
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
+function resolveApiBase(): string {
+  const configuredBase = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
+  if (configuredBase) {
+    return configuredBase;
+  }
+  if (globalThis.window !== undefined) {
+    return `http://${globalThis.window.location.hostname}:8000`;
+  }
+  return "http://127.0.0.1:8000";
+}
+
+const API_BASE = resolveApiBase();
 const SMARTY_EMBEDDED_KEY = process.env.NEXT_PUBLIC_SMARTY_EMBEDDED_KEY || "";
 const SMARTY_US_STREET_URL = "https://us-street.api.smarty.com/street-address";
 
@@ -396,6 +441,7 @@ async function request<T>(path: string, options?: RequestInit, actor?: ActorCont
 
   const response = await fetch(url.toString(), {
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     ...options,
   });
 
@@ -421,8 +467,11 @@ async function request<T>(path: string, options?: RequestInit, actor?: ActorCont
 export function signupAccount(payload: {
   full_name: string;
   company_name: string;
+  phone?: string | null;
+  bio?: string | null;
   tax_id?: string | null;
   dot_number?: string | null;
+  didit_session_id?: string | null;
   id_document_name: string;
   id_document_mime_type: string;
   id_document_base64: string;
@@ -432,14 +481,42 @@ export function signupAccount(payload: {
   email_verification_code: string;
   role: AuthRole;
 }) {
-  return request<AuthSession>("/auth/signup", {
+  return request<SignupApplication>("/auth/signup", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function createDiditSession(payload: { full_name: string; email: string; role: AuthRole }) {
+  return request<{ session_id: string; url: string }>("/auth/identity-verification/didit-session", {
     method: "POST",
     body: JSON.stringify(payload),
   });
 }
 
 export function requestSignupVerificationCode(payload: { email: string; role: AuthRole }) {
-  return request<{ detail: string; debug_code?: string | null }>("/auth/signup/request-verification-code", {
+  return request<{ detail: string }> ("/auth/signup/request-verification-code", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function verifySignupEmailCode(payload: { email: string; role: AuthRole; verification_code: string }) {
+  return request<{ detail: string }>("/auth/signup/verify-email-code", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function requestPasswordReset(payload: { email: string; role: AuthRole }) {
+  return request<{ detail: string }>("/auth/password-reset/request", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function confirmPasswordReset(payload: { email: string; role: AuthRole; token: string; new_password: string }) {
+  return request<{ detail: string }>("/auth/password-reset/confirm", {
     method: "POST",
     body: JSON.stringify(payload),
   });
@@ -455,6 +532,22 @@ export function loginAccount(payload: { email: string; password: string; role: A
 export function getUserProfile(email: string, role: AuthRole) {
   const query = new URLSearchParams({ email, role }).toString();
   return request<AuthProfile>(`/auth/profile?${query}`);
+}
+
+export function getDriverApplicationProfile(email: string) {
+  const query = new URLSearchParams({ email }).toString();
+  return request<DriverApplicationProfile>(`/driver-application/profile?${query}`);
+}
+
+export function updateDriverApplicationProfile(
+  email: string,
+  profile: Omit<DriverApplicationProfile, "email" | "updated_at">
+) {
+  const query = new URLSearchParams({ email }).toString();
+  return request<DriverApplicationProfile>(`/driver-application/profile?${query}`, {
+    method: "PUT",
+    body: JSON.stringify(profile),
+  });
 }
 
 export function listSubscriptionPlans() {
@@ -655,6 +748,8 @@ export function uploadDriverDocument(payload: {
   document_type: string;
   notes?: string;
   content_text?: string;
+  file_mime_type?: string;
+  file_base64?: string;
 }) {
   return request<DriverDocumentRecord>("/driver/documents/upload", {
     method: "POST",

@@ -65,6 +65,12 @@ export default function LiveChatSupport(props: LiveChatSupportProps) {
       setMessages([]);
       setSessionState(null);
 
+      if (!actor) {
+        setError("Please sign in as shipper or carrier to use live support chat.");
+        setLoading(false);
+        return;
+      }
+
       try {
         let nextSession = null as SupportThreadState | null;
 

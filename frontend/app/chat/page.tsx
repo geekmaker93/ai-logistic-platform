@@ -1,6 +1,19 @@
+"use client";
+
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 import LiveChatSupport from "@/app/components/live-chat-support";
 
 export default function ChatPage() {
+  const router = useRouter();
+
+  useEffect(() => {
+    const supportAgentName = globalThis.sessionStorage?.getItem("support-agent-name")?.trim();
+    if (supportAgentName) {
+      router.replace("/support-agent");
+    }
+  }, [router]);
+
   return (
     <main className="min-h-screen bg-slate-950 px-6 py-10 text-slate-100">
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
