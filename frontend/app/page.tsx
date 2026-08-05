@@ -973,7 +973,7 @@ function SignupPanel(props: Readonly<{
       <input
         value={signupForm.fullName}
         onChange={(event) => onSignupFormChange((prev) => ({ ...prev, fullName: event.target.value }))}
-        placeholder="Full name"
+        placeholder="First and last name"
         className="w-full rounded-xl border border-slate-600 bg-[#061B34] px-4 py-3 text-sm text-white outline-none ring-cyan-300 placeholder:text-slate-400 focus:ring-2"
       />
       <input
@@ -1586,8 +1586,8 @@ export default function Home() {
   async function startDiditVerification() {
     const fullName = signupForm.fullName.trim();
     const email = signupForm.email.trim().toLowerCase();
-    if (!fullName || !isValidEmailAddress(email)) {
-      setMessage("Enter your full name and a valid email before verifying your identity.");
+    if (fullName.split(/\s+/).length < 2 || !isValidEmailAddress(email)) {
+      setMessage("Enter your first and last name and a valid email before verifying your identity.");
       return;
     }
     if (!signupForm.diditConsent) {

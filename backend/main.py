@@ -3645,6 +3645,8 @@ def start_didit_session(payload: DiditSessionRequest, request: Request) -> Didit
 	email = normalize_email(payload.email)
 	if not is_valid_email(email):
 		raise HTTPException(status_code=400, detail="Enter a valid email address.")
+	if len(full_name.split()) < 2:
+		raise HTTPException(status_code=400, detail="Enter your first and last name before identity verification.")
 	callback = f"{resolve_frontend_base_url(request.headers.get('origin')).rstrip('/')}/"
 	return create_didit_session(full_name=full_name, email=email, role=payload.role, callback=callback)
 
