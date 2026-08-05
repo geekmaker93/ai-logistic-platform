@@ -3704,7 +3704,7 @@ def verify_signup_email_verification_code(payload: AuthSignupVerifyEmailCodeRequ
 			db,
 			email=email,
 			role=payload.role,
-			verification_code=payload.email_verification_code.strip(),
+			verification_code=payload.verification_code.strip(),
 		)
 	return AuthSignupVerificationCodeResponse(detail="Email verified.")
 
