@@ -18,7 +18,7 @@ from typing import Literal, cast
 from uuid import uuid4
 from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request as UrlRequest, urlopen
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -2134,6 +2134,11 @@ def create_didit_session(*, full_name: str, email: str, role: Literal["client", 
 	try:
 		with urlopen(request, timeout=15) as response:
 			result = json.loads(response.read().decode("utf-8"))
+	except HTTPError as error:
+		raise HTTPException(
+			status_code=502,
+			detail=f"Identity verification provider rejected the session request (HTTP {error.code}). Check the configured Didit workflow and API key.",
+		)
 	except (URLError, TimeoutError, ValueError):
 		raise HTTPException(status_code=503, detail="Unable to start identity verification. Please try again later.")
 
@@ -2155,6 +2160,11 @@ def verify_didit_session(session_id: str, *, email: str, role: Literal["client",
 	try:
 		with urlopen(request, timeout=15) as response:
 			decision = json.loads(response.read().decode("utf-8"))
+	except HTTPError as error:
+		raise HTTPException(
+			status_code=502,
+			detail=f"Identity verification provider rejected the decision request (HTTP {error.code}). Please contact support.",
+		)
 	except (URLError, TimeoutError, ValueError):
 		raise HTTPException(status_code=503, detail="Unable to confirm identity verification. Please try again later.")
 
