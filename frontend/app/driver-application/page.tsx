@@ -96,18 +96,29 @@ export default function DriverApplicationPage() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
 
-  useEffect(() => {
+  async function loadProfile() {
     const session = getAuthLiteSession("driver");
     if (!session?.email) {
       globalThis.window.location.assign("/");
       return;
     }
 
+    setLoading(true);
+    setMessage("");
     setEmail(session.email);
-    void getDriverApplicationProfile(session.email)
-      .then((result) => setProfile(toEditableProfile(result)))
-      .catch((error: unknown) => setMessage(error instanceof Error ? error.message : "Unable to load your application."))
-      .finally(() => setLoading(false));
+    try {
+      const result = await getDriverApplicationProfile(session.email);
+      setProfile(toEditableProfile(result));
+    } catch (error: unknown) {
+      setMessage(error instanceof Error ? error.message : "Unable to load your application.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    const kickoff = globalThis.window.setTimeout(() => void loadProfile(), 0);
+    return () => globalThis.window.clearTimeout(kickoff);
   }, []);
 
   function updateField<Key extends keyof EditableProfile>(key: Key, value: EditableProfile[Key]) {
@@ -165,8 +176,12 @@ export default function DriverApplicationPage() {
     reader.readAsDataURL(file);
   }
 
-  if (loading || !profile) {
+  if (loading) {
     return <main className="grid min-h-screen place-items-center bg-slate-100 text-slate-700">Loading driver application...</main>;
+  }
+
+  if (!profile) {
+    return <main className="grid min-h-screen place-items-center bg-slate-100 p-6 text-slate-700"><section className="w-full max-w-md space-y-4 border border-slate-200 bg-white p-6 text-center shadow-sm"><h1 className="text-lg font-bold text-slate-950">Unable to load driver application</h1><p className="text-sm">{message || "Please try again."}</p><button type="button" onClick={() => void loadProfile()} className="rounded-md bg-cyan-700 px-4 py-2.5 text-sm font-bold text-white hover:bg-cyan-800">Retry</button><Link href="/" className="block text-sm font-semibold text-cyan-700 hover:text-cyan-800">Return home</Link></section></main>;
   }
 
   return (

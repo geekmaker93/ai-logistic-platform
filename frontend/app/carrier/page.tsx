@@ -745,8 +745,8 @@ function buildDeliveryHealthSummary(params: {
   const onTimeStatus = onTimeStatusFromPrediction(predictedMinutesOfDay, parsedWindow);
 
   const estimatedFuelLiters = adjustedFuelLiters(recommendedRoute, operatingProfile);
-  const estimatedFuelCostUsd = calculateFuelCostUsd(recommendedRoute, fuelPricePerLiterUsd, operatingProfile);
-  const totalOperatingCostUsd = calculateTotalRouteCostUsd(recommendedRoute, fuelPricePerLiterUsd, operatingProfile);
+  const estimatedFuelCostUsd = recommendedRoute.economic?.fuel_cost_usd ?? calculateFuelCostUsd(recommendedRoute, fuelPricePerLiterUsd, operatingProfile);
+  const totalOperatingCostUsd = recommendedRoute.economic?.total_operating_cost_usd ?? calculateTotalRouteCostUsd(recommendedRoute, fuelPricePerLiterUsd, operatingProfile);
   const congestionZone = recommendedRoute.name;
   const constructionZones = constructionZoneCount(currentDelayMinutes);
   let roadClosureRiskLabel = "None";
@@ -985,6 +985,9 @@ export default function CarrierPortalPage() {
     toll_discount_pct: "0",
     fuel_price_adjustment_pct: "0",
     empty_mile_factor_pct: "10",
+    include_maintenance_cost: false,
+    include_driver_time_cost: false,
+    include_toll_cost: false,
   });
   const [streetSuggestions, setStreetSuggestions] = useState<AddressSuggestion[]>([]);
   const [streetPlaceId, setStreetPlaceId] = useState<string | null>(null);
@@ -1374,6 +1377,9 @@ export default function CarrierPortalPage() {
           toll_discount_pct: String(data.carrier_profile?.toll_discount_pct ?? DEFAULT_OPERATING_PROFILE.toll_discount_pct),
           fuel_price_adjustment_pct: String(data.carrier_profile?.fuel_price_adjustment_pct ?? DEFAULT_OPERATING_PROFILE.fuel_price_adjustment_pct),
           empty_mile_factor_pct: String(data.carrier_profile?.empty_mile_factor_pct ?? DEFAULT_OPERATING_PROFILE.empty_mile_factor_pct),
+          include_maintenance_cost: data.carrier_profile?.include_maintenance_cost ?? false,
+          include_driver_time_cost: data.carrier_profile?.include_driver_time_cost ?? false,
+          include_toll_cost: data.carrier_profile?.include_toll_cost ?? false,
         });
         setStreetPlaceId(null);
         setStreetSuggestions([]);
@@ -1696,6 +1702,16 @@ export default function CarrierPortalPage() {
     [queue]
   );
 
+  const commandCenterLoad = useMemo(
+    () => activeShipments[0] ?? offersForMe[0] ?? optimizationShipments[0] ?? null,
+    [activeShipments, offersForMe, optimizationShipments]
+  );
+
+  const commandCenterUrgentCount = useMemo(
+    () => optimizationShipments.filter((shipment) => shipment.urgency === "high").length,
+    [optimizationShipments]
+  );
+
   const selectedOptimizationShipment = useMemo(
     () => optimizationShipments.find((shipment) => shipment.id === optimizationShipmentId) || null,
     [optimizationShipments, optimizationShipmentId]
@@ -1735,7 +1751,8 @@ export default function CarrierPortalPage() {
     }
 
     const recommended = dedupedRoutes[0] || routeAnalysis.best_route;
-    const activeRoute = dedupedRoutes.find((route) => route.name === selectedRouteName) || recommended;
+    const persistedRouteName = routeAnalysis.selected_route?.name;
+    const activeRoute = dedupedRoutes.find((route) => route.name === selectedRouteName || route.name === persistedRouteName) || recommended;
     const alternatives = dedupedRoutes.filter((route) => route.name !== activeRoute.name);
     const hiddenCount = Math.max(0, routeAnalysis.routes.length - dedupedRoutes.length);
 
@@ -2210,7 +2227,7 @@ export default function CarrierPortalPage() {
     }
   }
 
-  async function onOptimize(shipmentId: string, mode: (typeof modeOptions)[number]["value"]) {
+  async function onOptimize(shipmentId: string, mode: (typeof modeOptions)[number]["value"], routeName?: string) {
     if (!session) {
       setMessage("Session missing. Please sign in again.");
       return;
@@ -2218,9 +2235,12 @@ export default function CarrierPortalPage() {
 
     setMessage("");
     try {
-      await optimizeRoute(shipmentId, mode, { role: "carrier", displayName: session.displayName });
-      trackEvent("shipment.optimize", { role: "carrier", shipmentId, mode });
-      setMessage(`Route optimized with ${mode.replace("_", " ")} mode.`);
+      await optimizeRoute(shipmentId, mode, { role: "carrier", displayName: session.displayName }, routeName);
+      trackEvent("shipment.optimize", { role: "carrier", shipmentId, mode, routeName });
+      if (routeName) {
+        setSelectedRouteName(routeName);
+      }
+      setMessage(`Applied ${routeName ?? "the best route"} using ${mode.replace("_", " ")} mode.`);
       await loadShipments();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Failed to optimize route.");
@@ -2256,10 +2276,7 @@ export default function CarrierPortalPage() {
       return;
     }
 
-    if (optimizationShipmentId) {
-      void loadRouteAnalysis(optimizationShipmentId, optimizationMode);
-    }
-  }, [activeTab, optimizationShipmentId, optimizationMode, optimizationShipments, loadRouteAnalysis, isSubscriptionActive]);
+  }, [activeTab, optimizationShipmentId, optimizationShipments, isSubscriptionActive]);
 
   useEffect(() => {
     if (!isSubscriptionActive) {
@@ -2473,6 +2490,9 @@ export default function CarrierPortalPage() {
           toll_discount_pct: Number(profileForm.toll_discount_pct),
           fuel_price_adjustment_pct: Number(profileForm.fuel_price_adjustment_pct),
           empty_mile_factor_pct: Number(profileForm.empty_mile_factor_pct),
+          include_maintenance_cost: profileForm.include_maintenance_cost,
+          include_driver_time_cost: profileForm.include_driver_time_cost,
+          include_toll_cost: profileForm.include_toll_cost,
           base_location: normalizedAddress || undefined,
           base_location_place_id: streetPlaceId || cityPlaceId || undefined,
         },
@@ -2511,15 +2531,15 @@ export default function CarrierPortalPage() {
   return (
     <main className="carrier-portal-shell min-h-screen px-4 py-6 text-slate-900 md:px-8 md:py-10">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-8">
-        <header className="carrier-hero-card carrier-fade-up rounded-[36px] p-8 text-white md:p-10">
+        <header className="carrier-hero-card carrier-fade-up rounded-xl p-8 text-white md:p-10">
           <div className="relative z-10 grid gap-8 xl:grid-cols-[1.35fr_0.85fr] xl:items-start">
             <div>
               <div className="inline-flex rounded-full border border-white/15 bg-white/10 px-4 py-1.5 text-[11px] font-semibold uppercase tracking-[0.28em] text-emerald-100">
-                Carrier workspace
+                Carrier operations
               </div>
-              <h1 className="mt-5 max-w-4xl text-4xl font-semibold tracking-[-0.03em] text-white md:text-5xl">Operate dispatch, pricing, routing, and payouts from one polished command center.</h1>
+              <h1 className="mt-5 max-w-4xl text-4xl font-semibold tracking-[-0.03em] text-white md:text-5xl">Dispatch, route, and settle freight with precision.</h1>
               <p className="mt-4 max-w-3xl text-base leading-7 text-emerald-50/90 md:text-lg">
-                Receive job offers, respond with structured quotes, optimize routes, assign drivers, and manage paid shipments through a carrier experience that feels client-grade.
+                Manage offers, routing, driver assignment, and settlement from a single operating console.
               </p>
               <div className="mt-6 flex flex-wrap gap-3 text-sm text-white/90">
                 <div className="rounded-full border border-white/12 bg-white/10 px-4 py-2">{profile?.company_name || "Carrier account"}</div>
@@ -2578,12 +2598,12 @@ export default function CarrierPortalPage() {
               </div>
 
               <div className="grid w-full gap-4 sm:grid-cols-2 xl:w-[360px]">
-                <div className="rounded-[28px] border border-white/12 bg-white/10 p-5 backdrop-blur-sm">
+                <div className="rounded-lg border border-white/12 bg-white/10 p-5 backdrop-blur-sm">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-emerald-100/80">Profile readiness</p>
                   <p className="mt-3 text-3xl font-semibold">{carrierProfileCompletion}%</p>
                   <p className="mt-2 text-sm leading-6 text-emerald-50/85">Keep operations, payout, and compliance details complete for faster driver assignment and shipper trust.</p>
                 </div>
-                <div className="rounded-[28px] border border-white/12 bg-white/10 p-5 backdrop-blur-sm">
+                <div className="rounded-lg border border-white/12 bg-white/10 p-5 backdrop-blur-sm">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-cyan-100/80">Pending revenue</p>
                   <p className="mt-3 text-3xl font-semibold">{formatUsdCompact(totalPending)}</p>
                   <p className="mt-2 text-sm leading-6 text-emerald-50/85">Quoted and accepted work that has not yet fully settled into paid revenue.</p>
@@ -2593,13 +2613,13 @@ export default function CarrierPortalPage() {
           </div>
         </header>
 
-        <nav className="carrier-premium-card carrier-fade-up flex flex-wrap gap-2 rounded-[30px] p-4 md:p-5">
+        <nav className="carrier-premium-card carrier-fade-up flex flex-wrap gap-2 rounded-xl p-3 md:p-4">
           {([
             { key: "dashboard", label: "Dashboard" },
+            { key: "optimization", label: "Route Optimization" },
             { key: "metrics", label: "Metrics" },
             { key: "tracking", label: "Tracking" },
             { key: "queue", label: "Queue & Offers" },
-            { key: "optimization", label: "Route Optimization" },
             { key: "payments", label: "Payments" },
             { key: "transactions", label: "Transaction History" },
             { key: "documents", label: "My Documents" },
@@ -2609,7 +2629,7 @@ export default function CarrierPortalPage() {
               key={key}
               type="button"
               onClick={() => setActiveTab(key)}
-              className={`carrier-tab-pill rounded-full px-4 py-2.5 text-sm font-semibold transition ${
+              className={`carrier-tab-pill rounded-lg px-4 py-2.5 text-sm font-semibold transition ${
                 activeTab === key
                   ? "bg-slate-950 text-white shadow-lg shadow-slate-900/15"
                   : "border border-slate-300/80 bg-white/90 text-slate-700 hover:bg-slate-100"
@@ -2620,7 +2640,7 @@ export default function CarrierPortalPage() {
           ))}
         </nav>
 
-        {message && (
+        {message && !message.startsWith("Applied ") && (
           <p className="carrier-premium-card carrier-fade-up rounded-[24px] border border-emerald-300 bg-emerald-50/90 px-5 py-4 text-sm font-medium text-emerald-950">
             {message}
           </p>
@@ -2738,6 +2758,107 @@ export default function CarrierPortalPage() {
                   {subscriptionActionLoading === "pause" ? "Resuming..." : "Resume Subscription"}
                 </button>
               )}
+            </div>
+          </section>
+        )}
+
+        {isSubscriptionActive && activeTab === "optimization" && (
+          <section className="space-y-6 carrier-fade-up">
+            <article className="carrier-hero-card overflow-hidden rounded-[30px] p-6 text-white md:p-8">
+              <div className="relative z-10 flex flex-wrap items-start justify-between gap-6">
+                <div className="max-w-3xl">
+                  <p className="text-xs font-semibold uppercase tracking-[0.28em] text-emerald-200">LynkExpress intelligence</p>
+                  <h2 className="mt-3 text-3xl font-semibold tracking-tight md:text-4xl">Route Optimization</h2>
+                  <p className="mt-3 max-w-2xl text-sm leading-7 text-emerald-50/90 md:text-base">
+                    Prioritize the load in front of you, then use road-aware routing and operating costs to decide the next best move.
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-emerald-200/20 bg-white/10 px-5 py-4 backdrop-blur-sm">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-emerald-100/80">Routing layer</p>
+                  <p className="mt-2 text-lg font-semibold">OSRM-ready workflow</p>
+                  <p className="mt-1 text-xs leading-5 text-emerald-50/80">Analyze a load to bring route distance, duration, fuel, toll, and risk signals into the decision.</p>
+                </div>
+              </div>
+            </article>
+
+            <div className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
+              <article className="carrier-premium-card rounded-[30px] p-6 md:p-7">
+                <div className="relative z-10">
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-500">Next best decision</p>
+                      <h3 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">{commandCenterLoad ? `${commandCenterLoad.origin} to ${commandCenterLoad.destination}` : "No loads need attention"}</h3>
+                    </div>
+                    {commandCenterLoad && (
+                      <span className={`rounded-full px-3 py-1.5 text-xs font-semibold ${carrierShipmentStatusBadgeClass(commandCenterLoad.status)}`}>
+                        {statusLabel[commandCenterLoad.status]}
+                      </span>
+                    )}
+                  </div>
+
+                  {commandCenterLoad ? (
+                    <>
+                      <div className="mt-6 grid gap-3 sm:grid-cols-3">
+                        <div className="rounded-2xl border border-slate-200 bg-white/80 p-4">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">Cargo</p>
+                          <p className="mt-2 text-sm font-semibold text-slate-900">{commandCenterLoad.cargo_type}</p>
+                          <p className="mt-1 text-xs text-slate-500">{toLbFromKg(commandCenterLoad.weight_kg).toLocaleString()} lb</p>
+                        </div>
+                        <div className="rounded-2xl border border-slate-200 bg-white/80 p-4">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">Load value</p>
+                          <p className="mt-2 text-sm font-semibold text-slate-900">{commandCenterLoad.quote_breakdown ? formatUsdCompact(commandCenterLoad.quote_breakdown.total_usd) : commandCenterLoad.carrier_offer_amount ? formatUsdCompact(commandCenterLoad.carrier_offer_amount) : "Needs pricing"}</p>
+                          <p className="mt-1 text-xs text-slate-500">{commandCenterLoad.client_name}</p>
+                        </div>
+                        <div className="rounded-2xl border border-slate-200 bg-white/80 p-4">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">Time sensitivity</p>
+                          <p className="mt-2 text-sm font-semibold capitalize text-slate-900">{commandCenterLoad.urgency}</p>
+                          <p className="mt-1 text-xs text-slate-500">{commandCenterLoad.time_window}</p>
+                        </div>
+                      </div>
+                      <div className="mt-6 flex flex-wrap gap-3">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setOptimizationShipmentId(commandCenterLoad.id);
+                            setActiveTab("optimization");
+                          }}
+                          className="rounded-full bg-emerald-700 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-600"
+                        >
+                          Analyze route
+                        </button>
+                        <button type="button" onClick={() => setActiveTab("queue")} className="rounded-full border border-slate-300 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-100">
+                          Review load queue
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="mt-6 rounded-2xl border border-dashed border-slate-300 bg-white/70 p-6 text-sm leading-6 text-slate-600">
+                      New carrier offers will appear here as soon as they enter your workspace. The command center will then rank the next load to inspect.
+                    </div>
+                  )}
+                </div>
+              </article>
+
+              <aside className="carrier-premium-card rounded-[30px] p-6">
+                <div className="relative z-10">
+                  <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-500">Intelligence stack</p>
+                  <h3 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">What is active today</h3>
+                  <div className="mt-5 space-y-3">
+                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                      <p className="text-sm font-semibold text-emerald-950">Route analysis</p>
+                      <p className="mt-1 text-xs leading-5 text-emerald-900">Existing route analysis ranks options using duration, fuel, toll, weather, traffic, and operating-cost signals.</p>
+                    </div>
+                    <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4">
+                      <p className="text-sm font-semibold text-sky-950">Dispatch data</p>
+                      <p className="mt-1 text-xs leading-5 text-sky-900">Offers, active loads, driver assignments, tracking, POD, and settlement remain the operational source of truth.</p>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                      <p className="text-sm font-semibold text-slate-900">Next intelligence phase</p>
+                      <p className="mt-1 text-xs leading-5 text-slate-600">Profit, Win Score, and AI explanation can attach to this view once their deterministic backend services are ready.</p>
+                    </div>
+                  </div>
+                </div>
+              </aside>
             </div>
           </section>
         )}
@@ -3198,6 +3319,7 @@ export default function CarrierPortalPage() {
                         {modeOptions.map((mode) => (
                           <button
                             key={mode.value}
+                            type="button"
                             onClick={() => void onOptimize(shipment.id, mode.value)}
                             className="rounded-md border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
                           >
@@ -3385,54 +3507,40 @@ export default function CarrierPortalPage() {
         )}
 
         {isSubscriptionActive && activeTab === "optimization" && (
-          <section className="grid gap-6 lg:grid-cols-[280px_1fr]">
-            <aside className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-xl font-semibold">Route Optimization</h2>
-                  <p className="mt-1 text-xs text-slate-500">Pick a shipment to inspect shipper details and rank routes.</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => void loadShipments()}
-                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+          <section className="space-y-6">
+            <div className="flex flex-wrap items-end justify-between gap-4 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
+              <div className="min-w-0 flex-1">
+                <label htmlFor="optimization-shipment" className="block text-sm font-semibold text-slate-900">Route Intelligence Shipment</label>
+                <p className="mt-1 text-xs text-slate-500">Choose an offered, accepted, or live shipment to analyze route options.</p>
+                <select
+                  id="optimization-shipment"
+                  value={optimizationShipmentId}
+                  onChange={(event) => {
+                    setOptimizationShipmentId(event.target.value);
+                    setRouteAnalysis(null);
+                  }}
+                  disabled={optimizationShipments.length === 0}
+                  className="mt-3 w-full max-w-3xl rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100 disabled:cursor-not-allowed disabled:bg-slate-100"
                 >
-                  {loading ? "Refreshing..." : "Refresh"}
-                </button>
+                  {optimizationShipments.length === 0 ? (
+                    <option value="">No eligible shipments available</option>
+                  ) : (
+                    optimizationShipments.map((shipment) => (
+                      <option key={shipment.id} value={shipment.id}>
+                        {shipment.origin} to {shipment.destination} | {shipment.client_name} | {statusLabel[shipment.status]}
+                      </option>
+                    ))
+                  )}
+                </select>
               </div>
-
-              <div className="mt-4 space-y-2">
-                {optimizationShipments.length === 0 && (
-                  <p className="rounded-lg border border-dashed border-slate-300 p-4 text-sm text-slate-500">
-                    No shipments available for route analysis.
-                  </p>
-                )}
-                {optimizationShipments.map((shipment) => {
-                  const isSelected = shipment.id === optimizationShipmentId;
-                  return (
-                    <button
-                      key={shipment.id}
-                      type="button"
-                      onClick={() => {
-                        setOptimizationShipmentId(shipment.id);
-                        setRouteAnalysis(null);
-                      }}
-                      className={`w-full rounded-xl border px-4 py-3 text-left transition ${
-                        isSelected
-                          ? "border-emerald-700 bg-emerald-50"
-                          : "border-slate-200 bg-white hover:bg-slate-50"
-                      }`}
-                    >
-                      <p className="text-sm font-semibold text-slate-900">{shipment.origin} to {shipment.destination}</p>
-                      <p className="mt-1 text-xs text-slate-500">{shipment.client_name} • {shipment.cargo_type}</p>
-                      <p className="mt-1 text-xs text-slate-400">
-                        {toLbFromKg(shipment.weight_kg).toLocaleString()} lb • {shipment.time_window}
-                      </p>
-                    </button>
-                  );
-                })}
-              </div>
-            </aside>
+              <button
+                type="button"
+                onClick={() => void loadShipments()}
+                className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+              >
+                {loading ? "Refreshing..." : "Refresh"}
+              </button>
+            </div>
 
             <article className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
               {!selectedOptimizationShipment && (
@@ -3466,7 +3574,6 @@ export default function CarrierPortalPage() {
                         type="button"
                         onClick={() => {
                           setOptimizationMode(mode.value);
-                          void loadRouteAnalysis(selectedOptimizationShipment.id, mode.value);
                         }}
                         className={`rounded-xl border px-4 py-3 text-left text-sm font-semibold transition ${
                           optimizationMode === mode.value
@@ -3490,10 +3597,10 @@ export default function CarrierPortalPage() {
                     {selectedOptimizationShipment.carrier_name?.toLowerCase() === session?.displayName.toLowerCase() && (
                       <button
                         type="button"
-                        onClick={() => void onOptimize(selectedOptimizationShipment.id, optimizationMode)}
+                        onClick={() => void onOptimize(selectedOptimizationShipment.id, optimizationMode, displayedRouteAnalysis?.activeRoute.name ?? routeAnalysis?.best_route.name)}
                         className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
                       >
-                        Apply Best Route
+                        {displayedRouteAnalysis?.activeRoute.name === displayedRouteAnalysis?.recommended.name ? "Apply Best Route" : "Apply Selected Route"}
                       </button>
                     )}
                   </div>
@@ -3508,6 +3615,16 @@ export default function CarrierPortalPage() {
                         <p className="mt-1 text-sm text-emerald-900">
                           {displayedRouteAnalysis.activeRoute.recommendation_reason}
                         </p>
+                        <div className="mt-3 border-t border-emerald-200 pt-3">
+                          <p className="text-xs font-semibold uppercase tracking-wider text-emerald-700">AI Recommendation</p>
+                          <p className="mt-1 text-sm font-semibold text-emerald-900">Recommended route: {routeAnalysis.ai_recommendation.recommended_route}</p>
+                          <p className="mt-1 text-sm text-emerald-900">{routeAnalysis.ai_recommendation.reason}</p>
+                          {routeAnalysis.ai_recommendation.tradeoffs.length > 0 && (
+                            <ul className="mt-2 space-y-1 text-xs text-emerald-800">
+                              {routeAnalysis.ai_recommendation.tradeoffs.map((tradeoff) => <li key={tradeoff}>{tradeoff}</li>)}
+                            </ul>
+                          )}
+                        </div>
                         <p className="mt-2 text-xs font-medium text-emerald-700">
                           Fuel pricing source: {activeFuelPriceSourceLabel} (${activeFuelPricePerLiterUsd.toFixed(3)}/L)
                         </p>
@@ -3517,7 +3634,7 @@ export default function CarrierPortalPage() {
                             routeBenchmarks,
                             activeFuelPricePerLiterUsd,
                             activeOperatingProfile,
-                            true
+                            displayedRouteAnalysis.activeRoute.name === displayedRouteAnalysis.recommended.name
                           ).map((label) => (
                             <span key={label} className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800">
                               {label}
@@ -3601,21 +3718,21 @@ export default function CarrierPortalPage() {
                           </div>
                           <div className="rounded-lg bg-white/80 p-3">
                             <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">Fuel Cost</p>
-                            <p className="mt-1 text-lg font-semibold text-emerald-950">${calculateFuelCostUsd(displayedRouteAnalysis.activeRoute, activeFuelPricePerLiterUsd, activeOperatingProfile).toFixed(2)}</p>
+                            <p className="mt-1 text-lg font-semibold text-emerald-950">${(displayedRouteAnalysis.activeRoute.economic?.fuel_cost_usd ?? calculateFuelCostUsd(displayedRouteAnalysis.activeRoute, activeFuelPricePerLiterUsd, activeOperatingProfile)).toFixed(2)}</p>
                             <p className="text-xs text-emerald-800">Fuel used {adjustedFuelLiters(displayedRouteAnalysis.activeRoute, activeOperatingProfile).toFixed(1)} L (profile-adjusted)</p>
                           </div>
                           <div className="rounded-lg bg-white/80 p-3">
                             <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">Total Route Cost</p>
-                            <p className="mt-1 text-lg font-semibold text-emerald-950">${calculateTotalRouteCostUsd(displayedRouteAnalysis.activeRoute, activeFuelPricePerLiterUsd, activeOperatingProfile).toFixed(2)}</p>
-                            <p className="text-xs text-emerald-800">Fuel + tolls + maintenance + driver</p>
+                            <p className="mt-1 text-lg font-semibold text-emerald-950">${(displayedRouteAnalysis.activeRoute.economic?.total_operating_cost_usd ?? calculateTotalRouteCostUsd(displayedRouteAnalysis.activeRoute, activeFuelPricePerLiterUsd, activeOperatingProfile)).toFixed(2)}</p>
+                            <p className="text-xs text-emerald-800">Included route and profit inputs</p>
                           </div>
                           <div className="rounded-lg bg-white/80 p-3">
-                            <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">Operational Cost Impact</p>
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">Cost Per Mile</p>
                             <p className="mt-1 text-lg font-semibold text-emerald-950">
-                              ${calculateTotalRouteCostUsd(displayedRouteAnalysis.activeRoute, activeFuelPricePerLiterUsd, activeOperatingProfile).toFixed(2)}
+                              ${(displayedRouteAnalysis.activeRoute.economic?.cost_per_mile_usd ?? 0).toFixed(2)}
                             </p>
                             <p className="text-xs text-emerald-800">
-                              Cost to execute under current fuel/toll conditions
+                              Economic engine baseline
                             </p>
                           </div>
                           <div className="rounded-lg bg-white/80 p-3">
@@ -3628,6 +3745,20 @@ export default function CarrierPortalPage() {
                             </p>
                           </div>
                         </div>
+                        {displayedRouteAnalysis.activeRoute.economic && (
+                          <div className="rounded-xl border border-emerald-200 bg-white/85 p-4 text-sm text-slate-700">
+                            <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Economic Engine Breakdown</p>
+                            <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                              <p><span className="font-semibold">Fuel:</span> ${displayedRouteAnalysis.activeRoute.economic.fuel_cost_usd.toFixed(2)}</p>
+                              {profileForm.include_toll_cost && <p><span className="font-semibold">Tolls:</span> ${displayedRouteAnalysis.activeRoute.economic.toll_cost_usd.toFixed(2)}</p>}
+                              {profileForm.include_maintenance_cost && <p><span className="font-semibold">Maintenance:</span> ${displayedRouteAnalysis.activeRoute.economic.maintenance_cost_usd.toFixed(2)}</p>}
+                              {profileForm.include_driver_time_cost && <p><span className="font-semibold">Driver time:</span> ${displayedRouteAnalysis.activeRoute.economic.time_cost_usd.toFixed(2)}</p>}
+                            </div>
+                            {displayedRouteAnalysis.activeRoute.economic.projected_profit_usd !== null && (
+                              <p className="mt-3 font-semibold text-emerald-900">Projected margin: ${displayedRouteAnalysis.activeRoute.economic.projected_profit_usd.toFixed(2)} ({displayedRouteAnalysis.activeRoute.economic.projected_margin_pct?.toFixed(1)}%)</p>
+                            )}
+                          </div>
+                        )}
                         <div className="mt-3 flex flex-wrap items-center gap-3">
                           <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ring-1 ${weatherRiskTone(displayedRouteAnalysis.activeRoute.weather_risk)}`}>
                             Weather Risk: {weatherImpactContext(displayedRouteAnalysis.activeRoute.weather_risk).label}
@@ -3701,7 +3832,7 @@ export default function CarrierPortalPage() {
                             >
                               {selectedRouteName === route.name ? "Selected" : "Select This Route"}
                             </button>
-                            <p className="mt-2 text-xs text-slate-500">{routeDifferenceSummary(displayedRouteAnalysis.activeRoute, route)}</p>
+                            <p className="mt-2 text-xs text-slate-500">{routeDifferenceSummary(displayedRouteAnalysis.recommended, route)}</p>
                             <div className="mt-3 flex items-center justify-between gap-2">
                               <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ${weatherRiskTone(route.weather_risk)}`}>
                                 Weather Risk: {weatherImpactContext(route.weather_risk).label}
@@ -3718,10 +3849,11 @@ export default function CarrierPortalPage() {
                               <p>ETA: {route.estimated_hours} h</p>
                               <p>Distance: {route.distance_km} km</p>
                               <p>Traffic delay: {route.traffic_delay_minutes} min</p>
-                              <p>Fuel Cost: ${calculateFuelCostUsd(route, activeFuelPricePerLiterUsd, activeOperatingProfile).toFixed(2)}</p>
+                              <p>Fuel Cost: ${(route.economic?.fuel_cost_usd ?? calculateFuelCostUsd(route, activeFuelPricePerLiterUsd, activeOperatingProfile)).toFixed(2)}</p>
                               <p>Fuel Used: {adjustedFuelLiters(route, activeOperatingProfile).toFixed(1)} L</p>
                               <p>Tolls: ${route.toll_usd.toFixed(2)}</p>
-                              <p>Total Route Cost: ${calculateTotalRouteCostUsd(route, activeFuelPricePerLiterUsd, activeOperatingProfile).toFixed(2)}</p>
+                              <p>Total Route Cost: ${(route.economic?.total_operating_cost_usd ?? calculateTotalRouteCostUsd(route, activeFuelPricePerLiterUsd, activeOperatingProfile)).toFixed(2)}</p>
+                              {route.economic && <p>Cost / mi: ${route.economic.cost_per_mile_usd.toFixed(2)}</p>}
                               <p>Efficiency Score: {routeBenchmarks ? calculateEfficiencyScore(route, routeBenchmarks, activeFuelPricePerLiterUsd, activeOperatingProfile) : 0} / 100</p>
                               <p className="text-xs text-slate-500">{weatherImpactContext(route.weather_risk).impact}</p>
                             </div>
@@ -4590,7 +4722,7 @@ export default function CarrierPortalPage() {
                   These values personalize route cost modeling to your fleet economics.
                 </p>
                 <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  <label className="space-y-1">
+                  <div className="space-y-1">
                     <span className="text-xs font-medium text-slate-700">Fuel efficiency (km/L)</span>
                     <input
                       type="number"
@@ -4600,7 +4732,7 @@ export default function CarrierPortalPage() {
                       onChange={(event) => setProfileForm((prev) => ({ ...prev, fuel_efficiency_kmpl: event.target.value }))}
                       className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 outline-none focus:border-emerald-700"
                     />
-                  </label>
+                  </div>
                   <label className="space-y-1">
                     <span className="text-xs font-medium text-slate-700">Idle fuel burn (L/h)</span>
                     <input
@@ -4612,7 +4744,7 @@ export default function CarrierPortalPage() {
                       className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 outline-none focus:border-emerald-700"
                     />
                   </label>
-                  <label className="space-y-1">
+                  <div className="space-y-1">
                     <span className="text-xs font-medium text-slate-700">Maintenance ($/km)</span>
                     <input
                       type="number"
@@ -4622,8 +4754,17 @@ export default function CarrierPortalPage() {
                       onChange={(event) => setProfileForm((prev) => ({ ...prev, maintenance_cost_per_km_usd: event.target.value }))}
                       className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 outline-none focus:border-emerald-700"
                     />
-                  </label>
-                  <label className="space-y-1">
+                    <label className="flex items-center gap-2 text-xs text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={profileForm.include_maintenance_cost}
+                        onChange={(event) => setProfileForm((prev) => ({ ...prev, include_maintenance_cost: event.target.checked }))}
+                        className="h-4 w-4 rounded border-slate-300 text-emerald-700 focus:ring-emerald-700"
+                      />
+                      <span>Include in profit estimate</span>
+                    </label>
+                  </div>
+                  <div className="space-y-1">
                     <span className="text-xs font-medium text-slate-700">Driver cost ($/h)</span>
                     <input
                       type="number"
@@ -4633,8 +4774,17 @@ export default function CarrierPortalPage() {
                       onChange={(event) => setProfileForm((prev) => ({ ...prev, driver_cost_per_hour_usd: event.target.value }))}
                       className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 outline-none focus:border-emerald-700"
                     />
-                  </label>
-                  <label className="space-y-1">
+                    <label className="flex items-center gap-2 text-xs text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={profileForm.include_driver_time_cost}
+                        onChange={(event) => setProfileForm((prev) => ({ ...prev, include_driver_time_cost: event.target.checked }))}
+                        className="h-4 w-4 rounded border-slate-300 text-emerald-700 focus:ring-emerald-700"
+                      />
+                      <span>Include in profit estimate</span>
+                    </label>
+                  </div>
+                  <div className="space-y-1">
                     <span className="text-xs font-medium text-slate-700">Toll discount (%)</span>
                     <input
                       type="number"
@@ -4645,7 +4795,16 @@ export default function CarrierPortalPage() {
                       onChange={(event) => setProfileForm((prev) => ({ ...prev, toll_discount_pct: event.target.value }))}
                       className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 outline-none focus:border-emerald-700"
                     />
-                  </label>
+                    <label className="flex items-center gap-2 text-xs text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={profileForm.include_toll_cost}
+                        onChange={(event) => setProfileForm((prev) => ({ ...prev, include_toll_cost: event.target.checked }))}
+                        className="h-4 w-4 rounded border-slate-300 text-emerald-700 focus:ring-emerald-700"
+                      />
+                      <span>Include estimated tolls in profit estimate</span>
+                    </label>
+                  </div>
                   <label className="space-y-1">
                     <span className="text-xs font-medium text-slate-700">Fuel price adjustment (%)</span>
                     <input

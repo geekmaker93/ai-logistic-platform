@@ -25,6 +25,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import JSON, Boolean, DateTime, Float, Integer, String, Text, UniqueConstraint, create_engine, or_, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from engines.economic import EconomicInputs, calculate_economic_breakdown
+from services.ollama_recommendation import RouteRecommendation, generate_route_recommendation
+from services.osrm import OsrmClient
+from services.intelligence_store import record_actual_outcome, record_route_options
+from services.intelligence_pipeline import build_route_intelligence
 
 try:
 	import stripe
@@ -73,6 +78,9 @@ GOOGLE_PLACES_DETAILS_URL = os.getenv(
 	"GOOGLE_PLACES_DETAILS_URL",
 	"https://maps.googleapis.com/maps/api/place/details/json",
 ).strip()
+OSRM_BASE_URL = os.getenv("OSRM_BASE_URL", "").strip()
+OSRM_REQUEST_TIMEOUT_SECONDS = float(os.getenv("OSRM_REQUEST_TIMEOUT_SECONDS", "5"))
+osrm_client = OsrmClient(OSRM_BASE_URL, OSRM_REQUEST_TIMEOUT_SECONDS)
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY", "").strip()
 OPENWEATHER_URL = os.getenv(
 	"OPENWEATHER_URL",
@@ -182,7 +190,7 @@ class DispatchMatch(BaseModel):
 	eta_minutes: int
 	available_trucks: int
 	vehicle_fit: str
-	distance_source: Literal["google_maps", "mixed", "heuristic"] = "heuristic"
+	distance_source: Literal["osrm", "google_maps", "mixed", "heuristic"] = "heuristic"
 	maps_directions_url: str | None = None
 
 
@@ -223,6 +231,7 @@ class RouteOption(BaseModel):
 	traffic_delay_minutes: int = Field(ge=0)
 	score: float
 	recommendation_reason: str
+	economic: dict[str, float | None] | None = None
 
 
 class ShipmentRecord(BaseModel):
@@ -293,6 +302,23 @@ class RejectShipmentRequest(BaseModel):
 
 class OptimizeRouteRequest(BaseModel):
 	mode: OptimizationMode = OptimizationMode.lowest_cost
+	route_name: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class RouteOutcomeRequest(BaseModel):
+	route_id: str = Field(min_length=8, max_length=64)
+	actual_eta_minutes: int | None = Field(default=None, ge=0)
+	actual_fuel_liters: float | None = Field(default=None, ge=0)
+	actual_operating_cost_usd: float | None = Field(default=None, ge=0)
+	actual_delivery_time: datetime | None = None
+	outcome_status: str = Field(min_length=2, max_length=32)
+
+
+class AiRouteRecommendation(BaseModel):
+	recommended_route: str
+	reason: str
+	tradeoffs: list[str]
+	source: Literal["ollama", "deterministic_fallback"]
 
 
 class RouteAnalysisResponse(BaseModel):
@@ -311,6 +337,8 @@ class RouteAnalysisResponse(BaseModel):
 	routes: list[RouteOption]
 	best_route: RouteOption
 	selected_route: RouteOption | None
+	ai_recommendation: AiRouteRecommendation
+	intelligence: dict[str, object] | None = None
 
 
 class UpdateStatusRequest(BaseModel):
@@ -497,6 +525,9 @@ class CarrierSettingsPayload(BaseModel):
 	toll_discount_pct: float | None = Field(default=None, ge=0, le=100)
 	fuel_price_adjustment_pct: float | None = Field(default=None, ge=-100, le=200)
 	empty_mile_factor_pct: float | None = Field(default=None, ge=0, le=200)
+	include_maintenance_cost: bool | None = None
+	include_driver_time_cost: bool | None = None
+	include_toll_cost: bool | None = None
 
 
 class CarrierSettingsResponse(BaseModel):
@@ -512,6 +543,9 @@ class CarrierSettingsResponse(BaseModel):
 	toll_discount_pct: float
 	fuel_price_adjustment_pct: float
 	empty_mile_factor_pct: float
+	include_maintenance_cost: bool
+	include_driver_time_cost: bool
+	include_toll_cost: bool
 	updated_at: datetime
 
 
@@ -848,6 +882,55 @@ class ShipmentModel(Base):
 	payout_release_eligible_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class RouteOptionRecordModel(Base):
+	__tablename__ = "route_option_records"
+
+	id: Mapped[str] = mapped_column(String(64), primary_key=True)
+	shipment_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+	route_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+	route_name: Mapped[str] = mapped_column(String(200), nullable=False)
+	origin: Mapped[str] = mapped_column(String(140), nullable=False)
+	destination: Mapped[str] = mapped_column(String(140), nullable=False)
+	weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
+	distance_km: Mapped[float | None] = mapped_column(Float, nullable=True)
+	eta_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+	fuel_liters: Mapped[float | None] = mapped_column(Float, nullable=True)
+	fuel_price_usd_per_liter: Mapped[float | None] = mapped_column(Float, nullable=True)
+	fuel_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+	toll_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+	weather_risk: Mapped[float | None] = mapped_column(Float, nullable=True)
+	maintenance_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+	operating_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+	total_operating_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+	cost_per_km_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+	optimization_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+	deterministic_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+	selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+	created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+	actual_eta_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+	actual_fuel_liters: Mapped[float | None] = mapped_column(Float, nullable=True)
+	actual_operating_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+	actual_delivery_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+	outcome_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+	completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class MlIntelligenceMetadataModel(Base):
+	__tablename__ = "ml_intelligence_metadata"
+
+	id: Mapped[str] = mapped_column(String(64), primary_key=True)
+	record_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+	relevance_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+	data_quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+	source_reliability_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+	recency_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+	historical_accuracy_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+	anomaly_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+	confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+	validation_status: Mapped[str] = mapped_column(String(24), nullable=False)
+	last_validated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class UserModel(Base):
 	__tablename__ = "users"
 	__table_args__ = (UniqueConstraint("email", "role", name="uq_users_email_role"),)
@@ -919,6 +1002,9 @@ class CarrierSettingsModel(Base):
 	toll_discount_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 	fuel_price_adjustment_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 	empty_mile_factor_pct: Mapped[float] = mapped_column(Float, nullable=False, default=10.0)
+	include_maintenance_cost: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+	include_driver_time_cost: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+	include_toll_cost: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 	updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -1600,6 +1686,9 @@ def to_carrier_settings_response(settings: CarrierSettingsModel) -> CarrierSetti
 		toll_discount_pct=settings.toll_discount_pct,
 		fuel_price_adjustment_pct=settings.fuel_price_adjustment_pct,
 		empty_mile_factor_pct=settings.empty_mile_factor_pct,
+		include_maintenance_cost=settings.include_maintenance_cost,
+		include_driver_time_cost=settings.include_driver_time_cost,
+		include_toll_cost=settings.include_toll_cost,
 		updated_at=settings.updated_at,
 	)
 
@@ -1629,11 +1718,14 @@ def user_to_auth_profile(user: UserModel, settings: CarrierSettingsModel | None)
 
 def driver_application_to_response(user: UserModel, profile: DriverApplicationModel) -> DriverApplicationProfileResponse:
 	temporary_resume = get_temporary_upload(profile.resume_temporary_upload_id)
+	phone = profile.phone.strip()
+	if len(phone) < 7:
+		phone = "Not provided"
 	return DriverApplicationProfileResponse(
 		email=user.email,
 		first_name=profile.first_name,
 		last_name=profile.last_name,
-		phone=profile.phone,
+		phone=phone,
 		address=profile.address,
 		zip_code=profile.zip_code,
 		cdl_information=profile.cdl_information,
@@ -2351,6 +2443,9 @@ def ensure_compatible_schema() -> None:
 		"toll_discount_pct": "FLOAT",
 		"fuel_price_adjustment_pct": "FLOAT",
 		"empty_mile_factor_pct": "FLOAT",
+		"include_maintenance_cost": "BOOLEAN DEFAULT FALSE",
+		"include_driver_time_cost": "BOOLEAN DEFAULT FALSE",
+		"include_toll_cost": "BOOLEAN DEFAULT FALSE",
 	}
 	carrier_driver_columns = {
 		"last_tracking_at": "DATETIME",
@@ -2498,16 +2593,16 @@ def compute_live_eta_from_coordinates(
 	shipment: ShipmentModel,
 	latitude: float,
 	longitude: float,
-) -> tuple[float | None, int | None, Literal["google_maps", "heuristic", "unavailable"]]:
+) -> tuple[float | None, int | None, Literal["osrm", "google_maps", "heuristic", "unavailable"]]:
 	destination = (shipment.destination or "").strip()
 	if not destination:
 		return None, None, "unavailable"
 
 	origin = f"{latitude:.6f},{longitude:.6f}"
-	google_eta = google_distance_and_eta(origin, destination)
-	if google_eta is not None:
-		distance_km, eta_minutes = google_eta
-		return distance_km, eta_minutes, "google_maps"
+	road_eta = road_distance_and_eta(origin, destination)
+	if road_eta is not None:
+		distance_km, eta_minutes, source = road_eta
+		return distance_km, eta_minutes, source
 
 	# Keep ETA available when map services are unavailable.
 	distance_km, eta_minutes = heuristic_linehaul_distance_and_eta(origin, destination)
@@ -2550,16 +2645,20 @@ def compute_dispatch_distance_and_eta(
 	origin: str,
 	destination: str,
 	carrier: CarrierProfile,
-) -> tuple[float, int, Literal["google_maps", "mixed", "heuristic"]]:
-	pickup_google = google_distance_and_eta(carrier.base_location, origin)
-	linehaul_google = google_distance_and_eta(origin, destination)
+) -> tuple[float, int, Literal["osrm", "google_maps", "mixed", "heuristic"]]:
+	pickup_road = road_distance_and_eta(carrier.base_location, origin)
+	linehaul_road = road_distance_and_eta(origin, destination)
 
-	pickup_distance, pickup_eta = pickup_google or heuristic_pickup_distance_and_eta(origin, carrier)
-	linehaul_distance, linehaul_eta = linehaul_google or heuristic_linehaul_distance_and_eta(origin, destination)
+	pickup_distance, pickup_eta = (
+		(pickup_road[0], pickup_road[1]) if pickup_road else heuristic_pickup_distance_and_eta(origin, carrier)
+	)
+	linehaul_distance, linehaul_eta = (
+		(linehaul_road[0], linehaul_road[1]) if linehaul_road else heuristic_linehaul_distance_and_eta(origin, destination)
+	)
 
-	if pickup_google and linehaul_google:
-		distance_source: Literal["google_maps", "mixed", "heuristic"] = "google_maps"
-	elif pickup_google or linehaul_google:
+	if pickup_road and linehaul_road and pickup_road[2] == linehaul_road[2]:
+		distance_source: Literal["osrm", "google_maps", "mixed", "heuristic"] = pickup_road[2]
+	elif pickup_road or linehaul_road:
 		distance_source = "mixed"
 	else:
 		distance_source = "heuristic"
@@ -2724,6 +2823,43 @@ def extract_geocoded_formatted_address(payload: dict) -> str | None:
 		return None
 
 	return formatted_address.strip()
+
+
+def parse_coordinate_pair(location: str) -> tuple[float, float] | None:
+	parts = [part.strip() for part in location.split(",")]
+	if len(parts) != 2:
+		return None
+	try:
+		latitude, longitude = float(parts[0]), float(parts[1])
+	except ValueError:
+		return None
+	if not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
+		return None
+	return latitude, longitude
+
+
+def extract_geocoded_coordinates(payload: dict) -> tuple[float, float] | None:
+	if payload.get("status") != "OK":
+		return None
+	results = payload.get("results") or []
+	first_result = results[0] if isinstance(results, list) and results and isinstance(results[0], dict) else None
+	location = ((first_result or {}).get("geometry") or {}).get("location")
+	if not isinstance(location, dict):
+		return None
+	latitude, longitude = location.get("lat"), location.get("lng")
+	if not isinstance(latitude, (int, float)) or not isinstance(longitude, (int, float)):
+		return None
+	return float(latitude), float(longitude)
+
+
+def resolve_location_coordinates(location: str) -> tuple[float, float] | None:
+	coordinates = parse_coordinate_pair(location.strip())
+	if coordinates is not None:
+		return coordinates
+	if not GOOGLE_MAPS_API_KEY or not location.strip():
+		return None
+	payload = google_geocode_call(location)
+	return extract_geocoded_coordinates(payload) if payload is not None else None
 
 
 def extract_autocomplete_suggestions(payload: dict, limit: int = 5) -> list[AddressSuggestion]:
@@ -3124,6 +3260,30 @@ def google_distance_and_eta(origin: str, destination: str) -> tuple[float, int] 
 		return None
 
 	return extract_distance_duration(payload)
+
+
+def osrm_distance_and_eta(origin: str, destination: str) -> tuple[float, int] | None:
+	if not osrm_client.enabled:
+		return None
+	origin_coordinates = resolve_location_coordinates(origin)
+	destination_coordinates = resolve_location_coordinates(destination)
+	if origin_coordinates is None or destination_coordinates is None:
+		return None
+	routes = osrm_client.driving_routes(origin_coordinates, destination_coordinates)
+	if not routes:
+		return None
+	best_route = min(routes, key=lambda route: route.duration_minutes)
+	return best_route.distance_km, best_route.duration_minutes
+
+
+def road_distance_and_eta(origin: str, destination: str) -> tuple[float, int, Literal["osrm", "google_maps"]] | None:
+	osrm_eta = osrm_distance_and_eta(origin, destination)
+	if osrm_eta is not None:
+		return osrm_eta[0], osrm_eta[1], "osrm"
+	google_eta = google_distance_and_eta(origin, destination)
+	if google_eta is not None:
+		return google_eta[0], google_eta[1], "google_maps"
+	return None
 
 
 def resolve_tracking_location_label(latitude: float, longitude: float) -> str:
@@ -3532,6 +3692,32 @@ def route_candidates(weight_kg: float) -> list[dict[str, float | int | str]]:
 	]
 
 
+def osrm_route_candidates(origin: str, destination: str, weight_kg: float) -> list[dict[str, float | int | str]]:
+	if not osrm_client.enabled:
+		return []
+	origin_coordinates = resolve_location_coordinates(origin)
+	destination_coordinates = resolve_location_coordinates(destination)
+	if origin_coordinates is None or destination_coordinates is None:
+		return []
+
+	weight_factor = 1 + (weight_kg / 20000)
+	candidates: list[dict[str, float | int | str]] = []
+	for index, route in enumerate(osrm_client.driving_routes(origin_coordinates, destination_coordinates), start=1):
+		distance_km = max(1.0, route.distance_km)
+		candidates.append(
+			{
+				"name": f"OSRM Route {index}",
+				"distance_km": distance_km,
+				"base_hours": round(max(0.1, route.duration_minutes / 60.0), 2),
+				"traffic_delay_minutes": 0,
+				"fuel_liters": round(distance_km * (0.17 + (weight_factor * 0.045)), 1),
+				"toll_usd": round(distance_km * 0.09, 2),
+				"weather_risk": 0.2,
+			}
+		)
+	return candidates
+
+
 def google_route_candidates(origin: str, destination: str, weight_kg: float) -> list[dict[str, float | int | str]]:
 	if not GOOGLE_MAPS_API_KEY:
 		return []
@@ -3570,9 +3756,9 @@ def google_route_candidates(origin: str, destination: str, weight_kg: float) -> 
 		)
 
 	return candidates
-def build_route_options(mode: OptimizationMode, weight_kg: float, urgency: str, origin: str, destination: str) -> list[RouteOption]:
+def build_route_options(mode: OptimizationMode, weight_kg: float, urgency: str, origin: str, destination: str, fuel_price_usd_per_liter: float | None = None, carrier_settings: CarrierSettingsModel | None = None, revenue_usd: float | None = None) -> list[RouteOption]:
 	routes: list[RouteOption] = []
-	base_routes = google_route_candidates(origin, destination, weight_kg)
+	base_routes = osrm_route_candidates(origin, destination, weight_kg) or google_route_candidates(origin, destination, weight_kg)
 	if not base_routes:
 		base_routes = [dict(route) for route in route_candidates(weight_kg)]
 	origin_weather = get_live_weather_risk(origin)
@@ -3586,8 +3772,42 @@ def build_route_options(mode: OptimizationMode, weight_kg: float, urgency: str, 
 			duration_factor = min(1.25, max(0.85, float(route["base_hours"]) / 10.0))
 			route["weather_risk"] = round(max(0.0, min(1.0, weather_average * duration_factor)), 2)
 
+	economic_by_route_name: dict[str, dict[str, float | None] | None] = {}
+	has_carrier_economics = bool(carrier_settings and (
+		carrier_settings.include_maintenance_cost
+		or carrier_settings.include_driver_time_cost
+		or carrier_settings.include_toll_cost
+	))
 	for candidate in base_routes:
-		score, reason = score_route(candidate, mode, urgency)
+		economic = None
+		if fuel_price_usd_per_liter is not None:
+			economic = calculate_economic_breakdown(EconomicInputs(
+				distance_km=float(candidate["distance_km"]), estimated_hours=float(candidate["base_hours"]) + (int(candidate["traffic_delay_minutes"]) / 60), fuel_liters=float(candidate["fuel_liters"]), toll_usd=float(candidate["toll_usd"]), weather_risk=float(candidate["weather_risk"]), traffic_delay_minutes=int(candidate["traffic_delay_minutes"]), fuel_price_usd_per_liter=fuel_price_usd_per_liter,
+				fuel_efficiency_kmpl=carrier_settings.fuel_efficiency_kmpl if carrier_settings else 4.8, idle_fuel_lph=carrier_settings.idle_fuel_lph if carrier_settings else 2.5, maintenance_cost_per_km_usd=carrier_settings.maintenance_cost_per_km_usd if carrier_settings else 0.12, driver_cost_per_hour_usd=carrier_settings.driver_cost_per_hour_usd if carrier_settings else 28.0, toll_discount_pct=carrier_settings.toll_discount_pct if carrier_settings else 0.0, fuel_price_adjustment_pct=carrier_settings.fuel_price_adjustment_pct if carrier_settings else 0.0, empty_mile_factor_pct=carrier_settings.empty_mile_factor_pct if carrier_settings else 10.0, include_maintenance_cost=carrier_settings.include_maintenance_cost if carrier_settings else False, include_driver_time_cost=carrier_settings.include_driver_time_cost if carrier_settings else False, include_toll_cost=carrier_settings.include_toll_cost if carrier_settings else False, revenue_usd=revenue_usd,
+			)).to_dict()
+		economic_by_route_name[str(candidate["name"])] = economic
+
+	metric_baselines = {
+		"eta_hours": min(float(candidate["base_hours"]) + (int(candidate["traffic_delay_minutes"]) / 60) for candidate in base_routes),
+		"weather_risk": min(max(0.01, float(candidate["weather_risk"])) for candidate in base_routes),
+		"fuel_liters": min(float(candidate["fuel_liters"]) for candidate in base_routes),
+		"toll_usd": min(max(0.01, float(candidate["toll_usd"])) for candidate in base_routes),
+	}
+	if has_carrier_economics:
+		metric_baselines["carrier_profit_cost"] = min(
+			float(economic["carrier_profit_cost_usd"])
+			for economic in economic_by_route_name.values()
+			if economic and economic.get("carrier_profit_cost_usd") is not None
+		)
+	metric_baselines["operational_cost"] = min(
+		float(economic["total_operating_cost_usd"])
+		for economic in economic_by_route_name.values()
+		if economic and economic.get("total_operating_cost_usd") is not None
+	)
+
+	for candidate in base_routes:
+		economic = economic_by_route_name[str(candidate["name"])]
+		score, reason = score_route(candidate, mode, urgency, economic, metric_baselines, has_carrier_economics)
 		routes.append(
 			RouteOption(
 				name=str(candidate["name"]),
@@ -3599,6 +3819,7 @@ def build_route_options(mode: OptimizationMode, weight_kg: float, urgency: str, 
 				traffic_delay_minutes=int(candidate["traffic_delay_minutes"]),
 				score=round(score, 2),
 				recommendation_reason=reason,
+				economic=economic,
 			)
 		)
 
@@ -3606,35 +3827,57 @@ def build_route_options(mode: OptimizationMode, weight_kg: float, urgency: str, 
 	return routes
 
 
-def score_route(route: dict[str, float | int | str], mode: OptimizationMode, urgency: str) -> tuple[float, str]:
-	urgency_bias = {"low": 0.8, "normal": 1.0, "high": 1.35}[urgency]
+def score_route(route: dict[str, float | int | str], mode: OptimizationMode, urgency: str, economic: dict[str, float | None] | None = None, metric_baselines: dict[str, float] | None = None, has_carrier_economics: bool = False) -> tuple[float, str]:
+	"""Score a route using universal operations plus opted-in carrier economics."""
 	eta_hours = float(route["base_hours"]) + (int(route["traffic_delay_minutes"]) / 60)
 	fuel = float(route["fuel_liters"])
 	weather = float(route["weather_risk"])
 	toll = float(route["toll_usd"])
+	baselines = metric_baselines or {}
+	operational_cost = float(economic["total_operating_cost_usd"]) if economic and economic.get("total_operating_cost_usd") is not None else 0.0
+	operational_cost_ratio = operational_cost / max(0.01, baselines.get("operational_cost", operational_cost or 1.0)) if operational_cost else 1.0
+	carrier_profit_cost = float(economic["carrier_profit_cost_usd"]) if economic and economic.get("carrier_profit_cost_usd") is not None else 0.0
+	carrier_profit_ratio = carrier_profit_cost / max(0.01, baselines.get("carrier_profit_cost", carrier_profit_cost or 1.0)) if has_carrier_economics and carrier_profit_cost else 1.0
+	eta_ratio = eta_hours / max(0.01, baselines.get("eta_hours", eta_hours))
+	weather_ratio = max(0.01, weather) / max(0.01, baselines.get("weather_risk", max(0.01, weather)))
+	fuel_ratio = fuel / max(0.01, baselines.get("fuel_liters", fuel))
+	toll_ratio = max(0.01, toll) / max(0.01, baselines.get("toll_usd", max(0.01, toll)))
 
-	if mode == OptimizationMode.fastest:
-		score = eta_hours * 0.7 * urgency_bias + fuel * 0.1 + weather * 30 + toll * 0.1
-		reason = "Best for shortest ETA under current traffic conditions."
-	elif mode == OptimizationMode.fuel_efficient:
-		score = fuel * 0.7 + eta_hours * 0.2 + weather * 20 + toll * 0.1
-		reason = "Best for lowering fuel consumption."
-	elif mode == OptimizationMode.weather_safe:
-		score = weather * 80 + eta_hours * 0.2 + fuel * 0.1 + toll * 0.1
-		reason = "Best route for minimizing weather-related risk."
-	elif mode == OptimizationMode.eco:
-		emissions_penalty = fuel * 2.68
-		score = emissions_penalty * 0.6 + eta_hours * 0.2 + weather * 20 + toll * 0.2
-		reason = "Best for reducing projected emissions."
+	urgency_weights = {
+		"low": {"eta": 0.15, "fuel": 0.30, "weather": 0.20, "toll": 0.10, "operational": 0.25, "carrier": 0.0},
+		"normal": {"eta": 0.30, "fuel": 0.20, "weather": 0.20, "toll": 0.10, "operational": 0.20, "carrier": 0.0},
+		"high": {"eta": 0.50, "fuel": 0.15, "weather": 0.15, "toll": 0.05, "operational": 0.15, "carrier": 0.0},
+	}[urgency]
+	mode_multipliers = {
+		OptimizationMode.fastest: {"eta": 1.8, "fuel": 0.8, "weather": 0.9, "toll": 0.7, "operational": 0.8, "carrier": 0.8},
+		OptimizationMode.fuel_efficient: {"eta": 0.7, "fuel": 1.8, "weather": 0.9, "toll": 0.8, "operational": 0.8, "carrier": 0.8},
+		OptimizationMode.weather_safe: {"eta": 0.8, "fuel": 0.8, "weather": 1.8, "toll": 0.7, "operational": 0.8, "carrier": 0.8},
+		OptimizationMode.eco: {"eta": 0.7, "fuel": 1.7, "weather": 0.8, "toll": 0.7, "operational": 1.0, "carrier": 1.0},
+		OptimizationMode.lowest_cost: {"eta": 0.5, "fuel": 0.5, "weather": 0.5, "toll": 0.5, "operational": 4.5, "carrier": 1.0},
+	}[mode]
+	weights = {key: urgency_weights[key] * mode_multipliers[key] for key in urgency_weights}
+	if has_carrier_economics:
+		weights["carrier"] = weights["operational"] * 0.25
+	weight_total = sum(weights.values())
+	weights = {key: value / weight_total for key, value in weights.items()}
+	score = (
+		(eta_ratio * weights["eta"])
+		+ (fuel_ratio * weights["fuel"])
+		+ (weather_ratio * weights["weather"])
+		+ (toll_ratio * weights["toll"])
+		+ (operational_cost_ratio * weights["operational"])
+		+ (carrier_profit_ratio * weights["carrier"])
+	)
+	if has_carrier_economics:
+		reason = "Best normalized route using operational signals and carrier-enabled profit assumptions."
 	else:
-		score = (fuel * 0.45) + (toll * 0.25) + (eta_hours * 0.2 * urgency_bias) + (weather * 25 * 0.1)
-		reason = "Best balance of fuel, tolls, and delivery time."
+		reason = "Best normalized operational route using ETA, fuel, weather, traffic, and toll estimates."
 
-	return score, reason
+	return score * 100, reason
 
 
-def compute_best_route(mode: OptimizationMode, weight_kg: float, urgency: str, origin: str, destination: str) -> RouteOption:
-	routes = build_route_options(mode, weight_kg, urgency, origin, destination)
+def compute_best_route(mode: OptimizationMode, weight_kg: float, urgency: str, origin: str, destination: str, fuel_price_usd_per_liter: float | None = None, carrier_settings: CarrierSettingsModel | None = None, revenue_usd: float | None = None) -> RouteOption:
+	routes = build_route_options(mode, weight_kg, urgency, origin, destination, fuel_price_usd_per_liter, carrier_settings, revenue_usd)
 	if not routes:
 		raise RuntimeError("Unable to compute route option.")
 	return routes[0]
@@ -3876,7 +4119,7 @@ def signup(payload: AuthSignupRequest, request: Request) -> SignupApplicationRes
 			subscription_status="inactive",
 			subscription_plan=plan_for_role(role),
 			subscription_current_period_end=None,
-			approval_status="pending_review",
+			approval_status="active",
 			created_at=utc_now(),
 			updated_at=utc_now(),
 		)
@@ -4011,7 +4254,17 @@ def login(payload: AuthLoginRequest, response: Response, request: Request) -> Au
 		if user is None or not verify_password(password, user.password_hash):
 			raise HTTPException(status_code=401, detail="Invalid credentials for the selected role.")
 		if user.approval_status == "pending_review":
-			raise HTTPException(status_code=403, detail="Your application is pending review.")
+			verified_submission = db.scalar(
+				select(SignupIdentityDocumentModel.id).where(
+					SignupIdentityDocumentModel.user_id == user.id,
+					SignupIdentityDocumentModel.didit_session_id.is_not(None),
+				)
+			)
+			if verified_submission is None:
+				raise HTTPException(status_code=403, detail="Your application is pending review.")
+			user.approval_status = "active"
+			user.updated_at = utc_now()
+			db.commit()
 		if user.approval_status == "rejected":
 			raise HTTPException(status_code=403, detail="Your application was not approved.")
 
@@ -4108,6 +4361,9 @@ def apply_carrier_settings_updates(
 			("toll_discount_pct", "toll_discount_pct"),
 			("fuel_price_adjustment_pct", "fuel_price_adjustment_pct"),
 			("empty_mile_factor_pct", "empty_mile_factor_pct"),
+			("include_maintenance_cost", "include_maintenance_cost"),
+			("include_driver_time_cost", "include_driver_time_cost"),
+			("include_toll_cost", "include_toll_cost"),
 		)
 		for payload_field, settings_field in scalar_updates:
 			value = getattr(carrier_payload, payload_field)
@@ -6016,7 +6272,7 @@ def optimize_route(
 		raise HTTPException(status_code=403, detail="Only carriers can optimize routes.")
 
 	with get_session() as db:
-		require_subscription_for_actor(db, role, name)
+		carrier_user = require_subscription_for_actor(db, role, name)
 		shipment = get_shipment_model(db, shipment_id)
 		ensure_carrier_assigned(shipment, name)
 		if shipment.status not in {
@@ -6026,17 +6282,31 @@ def optimize_route(
 		}:
 			raise HTTPException(status_code=409, detail="Route optimization allowed only for accepted or active shipments.")
 
-		best_route = compute_best_route(payload.mode, shipment.weight_kg, shipment.urgency, shipment.origin, shipment.destination)
-		shipment.selected_route = best_route.model_dump()
-		shipment.estimated_arrival = utc_now() + timedelta(hours=best_route.estimated_hours)
+		fuel_price_per_liter, _fuel_price_source = live_fuel_price_per_liter(shipment.origin)
+		carrier_settings = db.scalar(select(CarrierSettingsModel).where(CarrierSettingsModel.user_id == carrier_user.id))
+		routes = build_route_options(payload.mode, shipment.weight_kg, shipment.urgency, shipment.origin, shipment.destination, fuel_price_per_liter, carrier_settings, shipment.shipper_approved_amount or shipment.carrier_offer_amount)
+		if not routes:
+			raise HTTPException(status_code=422, detail="No route options are available for this shipment.")
+		best_route = routes[0]
+		selected_route = next((route for route in routes if route.name == payload.route_name), None) if payload.route_name else best_route
+		if selected_route is None:
+			raise HTTPException(status_code=422, detail="The selected route is no longer available. Analyze routes again and choose a current option.")
+
+		shipment.selected_route = selected_route.model_dump()
+		shipment.estimated_arrival = utc_now() + timedelta(hours=selected_route.estimated_hours)
 		shipment.updated_at = utc_now()
+		record_route_options(
+			db, RouteOptionRecordModel, MlIntelligenceMetadataModel, shipment.id,
+			shipment.origin, shipment.destination, shipment.weight_kg, payload.mode.value,
+			fuel_price_per_liter, routes, selected_route.name, shipment.updated_at,
+		)
 
 		history = list(shipment.status_history or [])
 		history.append(
 			{
 				"status": shipment.status,
 				"timestamp": shipment.updated_at.isoformat(),
-				"note": f"Route optimized in {payload.mode.value} mode",
+				"note": f"Applied {selected_route.name} in {payload.mode.value} mode",
 			}
 		)
 		shipment.status_history = history
@@ -6045,6 +6315,32 @@ def optimize_route(
 		db.commit()
 		db.refresh(shipment)
 		return serialize_shipment(shipment)
+
+
+@app.post("/shipments/{shipment_id}/route-outcomes")
+def record_route_outcome(
+	shipment_id: str,
+	payload: RouteOutcomeRequest,
+	actor_role: ActorRole | None = Query(default=None, alias="as"),
+	actor_name: str | None = Query(default=None, alias="name"),
+) -> dict[str, str]:
+	role, name = require_actor_context(actor_role, actor_name)
+	if role != ActorRole.carrier:
+		raise HTTPException(status_code=403, detail="Only carriers can record actual route outcomes.")
+	with get_session() as db:
+		require_subscription_for_actor(db, role, name)
+		shipment = get_shipment_model(db, shipment_id)
+		ensure_carrier_assigned(shipment, name)
+		record = db.scalar(select(RouteOptionRecordModel).where(
+			RouteOptionRecordModel.shipment_id == shipment_id,
+			RouteOptionRecordModel.route_id == payload.route_id,
+		))
+		if record is None:
+			raise HTTPException(status_code=404, detail="Route option record not found for shipment.")
+		record_actual_outcome(record, payload, utc_now())
+		db.add(record)
+		db.commit()
+	return {"status": "recorded", "route_id": payload.route_id}
 
 
 @app.get("/shipments/{shipment_id}/route-analysis", response_model=RouteAnalysisResponse)
@@ -6059,16 +6355,52 @@ def route_analysis(
 		raise HTTPException(status_code=403, detail="Only carriers can analyze routes.")
 
 	with get_session() as db:
-		require_subscription_for_actor(db, role, name)
+		carrier_user = require_subscription_for_actor(db, role, name)
 		shipment = get_shipment_model(db, shipment_id)
 		if not carrier_can_view_offer(shipment, name):
 			raise HTTPException(status_code=403, detail="Carrier not authorized to view this shipment.")
 
 		fuel_price_per_liter, fuel_price_source = live_fuel_price_per_liter(shipment.origin)
-		routes = build_route_options(mode, shipment.weight_kg, shipment.urgency, shipment.origin, shipment.destination)
+		carrier_settings = db.scalar(select(CarrierSettingsModel).where(CarrierSettingsModel.user_id == carrier_user.id))
+		routes = build_route_options(mode, shipment.weight_kg, shipment.urgency, shipment.origin, shipment.destination, fuel_price_per_liter, carrier_settings, shipment.shipper_approved_amount or shipment.carrier_offer_amount)
 		best_route = routes[0]
 		selected_route_payload = shipment.selected_route
 		selected_route = RouteOption(**selected_route_payload) if selected_route_payload else None
+		record_route_options(
+			db, RouteOptionRecordModel, MlIntelligenceMetadataModel, shipment.id,
+			shipment.origin, shipment.destination, shipment.weight_kg, mode.value,
+			fuel_price_per_liter, routes, None, utc_now(),
+		)
+		deterministic_result = {
+			"route_name": best_route.name, "distance_km": best_route.distance_km,
+			"eta_minutes": round(best_route.estimated_hours * 60), "fuel_liters": best_route.fuel_liters,
+			"weather_risk": best_route.weather_risk, "toll_usd": best_route.toll_usd,
+			"weight_kg": shipment.weight_kg,
+			"total_operating_cost_usd": (best_route.economic or {}).get("total_operating_cost_usd"),
+			"deterministic_score": best_route.score, "selected": True,
+		}
+		intelligence = build_route_intelligence(
+			db, RouteOptionRecordModel, MlIntelligenceMetadataModel,
+			{
+				"origin": shipment.origin, "destination": shipment.destination,
+				"weight_kg": shipment.weight_kg, "optimization_mode": mode.value,
+				"route_name": best_route.name, "weather_risk": best_route.weather_risk,
+				"time_window": shipment.time_window,
+			}, deterministic_result,
+		)
+		ai_recommendation = generate_route_recommendation(
+			optimization_mode=mode.value,
+			winning_route=best_route.name,
+			routes=[
+				{
+					"name": route.name,
+					"cost": (route.economic or {}).get("carrier_profit_cost_usd") or (route.economic or {}).get("total_operating_cost_usd"),
+					"eta_minutes": round(route.estimated_hours * 60),
+				}
+				for route in routes
+			],
+			validated_context=intelligence["context"],
+		)
 		return RouteAnalysisResponse(
 			shipment_id=shipment.id,
 			client_name=shipment.client_name,
@@ -6085,6 +6417,8 @@ def route_analysis(
 			routes=routes,
 			best_route=best_route,
 			selected_route=selected_route,
+			ai_recommendation=AiRouteRecommendation(**ai_recommendation.__dict__),
+			intelligence=intelligence,
 		)
 
 

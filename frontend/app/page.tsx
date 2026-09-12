@@ -15,20 +15,8 @@ import LiveChatSupport from "@/app/components/live-chat-support";
 import { AuthRole, confirmDiditSession, createDiditSession, driverLogin, loginAccount, requestPasswordReset, requestSignupVerificationCode, signupAccount, verifySignupEmailCode } from "@/lib/logistics-api";
 import { trackEvent } from "@/lib/telemetry";
 
-const truckTypeOptions = [
-  { value: "dry_van", label: "Dry Van" },
-  { value: "reefer", label: "Reefer" },
-  { value: "flatbed", label: "Flatbed" },
-  { value: "step_deck", label: "Step Deck" },
-  { value: "power_only", label: "Power Only" },
-  { value: "box_truck", label: "Box Truck" },
-  { value: "tanker", label: "Tanker" },
-  { value: "lowboy", label: "Lowboy" },
-  { value: "hotshot", label: "Hotshot" },
-] as const;
-
 type LoginRole = "client" | "carrier" | "driver_token" | "driver";
-type LandingView = "landing" | "pricing" | "resources" | "about" | "login" | "signup_role" | "signup" | "signup_verify" | "signup_identity" | "signup_profile" | "signup_review" | "signup_submitted" | "forgot_password";
+type LandingView = "landing" | "pricing" | "resources" | "about" | "login" | "signup_role" | "signup" | "signup_verify" | "signup_identity" | "signup_verified" | "forgot_password";
 type ResourceSection = "events";
 
 type LoginState = {
@@ -123,20 +111,10 @@ function SignupIdentityPanel(props: Readonly<{ signupForm: SignupState; submitti
   return <div className="mt-6 space-y-4"><p className="text-xs uppercase tracking-wider text-slate-300">4. Identity Verification</p><DiditIdentityVerification role={signupForm.role} sessionId={signupForm.diditSessionId} consent={signupForm.diditConsent} submitting={submitting} onConsentChange={(diditConsent) => onSignupFormChange((prev) => ({ ...prev, diditConsent }))} onStart={onStart} /><button type="button" onClick={onBack} className="rounded-xl border border-slate-500 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10">Back</button></div>;
 }
 
-function SignupProfilePanel(props: Readonly<{ signupForm: SignupState; onSignupFormChange: (updater: (prev: SignupState) => SignupState) => void; onToggleVehicleType: (value: string) => void; onContinue: () => void; onBack: () => void }>) {
-  const { signupForm, onSignupFormChange, onToggleVehicleType, onContinue, onBack } = props;
-  const notesLabel = signupForm.role === "driver" ? "Driving experience and equipment" : signupForm.role === "client" ? "Freight or shipping needs" : "Operating notes";
-  return <div className="mt-6 space-y-4"><p className="text-xs uppercase tracking-wider text-slate-300">5. Role-Specific Profile</p><input value={signupForm.phone} onChange={(event) => onSignupFormChange((prev) => ({ ...prev, phone: event.target.value }))} placeholder="Contact phone" type="tel" className="w-full rounded-xl border border-slate-600 bg-[#061B34] px-4 py-3 text-sm text-white outline-none ring-cyan-300 placeholder:text-slate-400 focus:ring-2" />{signupForm.role === "carrier" ? <div className="rounded-xl border border-slate-600 bg-[#061B34] p-3"><p className="mb-2 text-sm font-semibold text-white">Fleet equipment</p><div className="grid grid-cols-1 gap-2 sm:grid-cols-2">{truckTypeOptions.map((option) => <label key={option.value} className="flex items-center gap-2 text-sm text-slate-100"><input type="checkbox" checked={signupForm.vehicleTypes.includes(option.value)} onChange={() => onToggleVehicleType(option.value)} className="h-4 w-4 rounded border-slate-500 text-emerald-500" /><span>{option.label}</span></label>)}</div></div> : <textarea value={signupForm.profileNotes} onChange={(event) => onSignupFormChange((prev) => ({ ...prev, profileNotes: event.target.value }))} placeholder={notesLabel} maxLength={400} rows={4} className="w-full resize-y rounded-xl border border-slate-600 bg-[#061B34] px-4 py-3 text-sm text-white outline-none ring-cyan-300 placeholder:text-slate-400 focus:ring-2" />}<button type="button" onClick={onContinue} className="rounded-xl bg-cyan-500 px-4 py-3 text-sm font-semibold text-[#031227] hover:bg-cyan-400">Review Application</button><button type="button" onClick={onBack} className="ml-3 rounded-xl border border-slate-500 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10">Back</button></div>;
-}
-
-function SignupReviewPanel(props: Readonly<{ signupForm: SignupState; submitting: SubmitState; onSubmit: () => void; onBack: () => void }>) {
-  const { signupForm, submitting, onSubmit, onBack } = props;
-  return <div className="mt-6 space-y-4"><p className="text-xs uppercase tracking-wider text-slate-300">6. Review / Approval</p><div className="rounded-xl border border-slate-600 bg-[#061B34] p-4 text-sm text-slate-200"><p className="font-semibold text-white">{signupForm.companyName}</p><p>{signupForm.fullName}</p><p>{signupForm.email.trim().toLowerCase()}</p><p className="mt-3 text-cyan-200">Email and identity verification are complete. Submit your application for activation.</p></div><button type="button" onClick={onSubmit} disabled={submitting !== null} className="rounded-xl bg-cyan-500 px-4 py-3 text-sm font-semibold text-[#031227] hover:bg-cyan-400 disabled:opacity-60">{submitting === "signup" ? "Submitting..." : "Submit for Approval"}</button><button type="button" onClick={onBack} disabled={submitting !== null} className="ml-3 rounded-xl border border-slate-500 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10">Back</button></div>;
-}
-
-function SignupSubmittedPanel(props: Readonly<{ onBackToLogin: () => void }>) {
-  const { onBackToLogin } = props;
-  return <div className="mt-6 space-y-4"><p className="text-xs uppercase tracking-wider text-slate-300">7. Account Activation</p><div className="rounded-xl border border-cyan-300/40 bg-cyan-500/10 p-4 text-sm text-cyan-50"><p className="font-semibold text-white">Application submitted for review</p><p className="mt-2">Your account will be activated after approval. You can sign in once activation is complete.</p></div><button type="button" onClick={onBackToLogin} className="rounded-xl bg-cyan-500 px-4 py-3 text-sm font-semibold text-[#031227] hover:bg-cyan-400">Back to Login</button></div>;
+function SignupVerifiedPanel(props: Readonly<{ signupForm: SignupState; submitting: SubmitState; onContinue: () => void }>) {
+  const { signupForm, submitting, onContinue } = props;
+  const destination = signupForm.role === "client" ? "Shipper Portal" : signupForm.role === "carrier" ? "Carrier Portal" : "Driver Profile";
+  return <div className="mt-6 space-y-4"><p className="text-xs uppercase tracking-wider text-slate-300">5. Verification Complete</p><div className="rounded-xl border border-cyan-300/40 bg-cyan-500/10 p-4 text-sm text-cyan-50"><p className="font-semibold text-white">Your account has been successfully verified.</p><p className="mt-2">Continue to create your account and open the {destination}.</p></div><button type="button" onClick={onContinue} disabled={submitting !== null} className="rounded-xl bg-cyan-500 px-4 py-3 text-sm font-semibold text-[#031227] hover:bg-cyan-400 disabled:opacity-60">{submitting === "signup" ? "Creating account..." : "Continue to Create Account"}</button></div>;
 }
 
 function getAboutStyles() {
@@ -153,13 +131,10 @@ function getAboutStyles() {
 
 function getLoginRoleClass(role: LoginRole, selected: boolean): string {
   if (!selected) {
-    return "border border-slate-600 bg-[#061B34] text-slate-200 hover:bg-[#0A2648]";
+    return "border border-slate-200 bg-white text-slate-600 hover:border-slate-400 hover:text-slate-950";
   }
 
-  if (role === "client") return "bg-indigo-500 text-white";
-  if (role === "carrier") return "bg-emerald-500 text-white";
-  if (role === "driver_token") return "bg-amber-500 text-white";
-  return "bg-orange-600 text-white";
+  return "border border-slate-950 bg-slate-950 text-white shadow-sm";
 }
 
 function getLoginRoleLabel(role: LoginRole): string {
@@ -796,14 +771,14 @@ function LoginPanel(props: Readonly<{
 
   return (
     <div className="mt-6 space-y-4">
-      <p className="text-xs uppercase tracking-wider text-slate-300">Login</p>
+      <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Secure access</p>
       {loginForm.role !== "driver_token" && (
         <input
           type="email"
           value={loginForm.email}
           onChange={(event) => onLoginFormChange((prev) => ({ ...prev, email: event.target.value }))}
           placeholder="Email"
-          className="w-full rounded-xl border border-slate-600 bg-[#061B34] px-4 py-3 text-sm text-white outline-none ring-cyan-300 placeholder:text-slate-400 focus:ring-2"
+          className="w-full rounded-lg border border-slate-300 bg-white px-4 py-3 text-sm text-slate-950 outline-none placeholder:text-slate-400 focus:border-slate-950 focus:ring-2 focus:ring-slate-200"
         />
       )}
 
@@ -813,13 +788,13 @@ function LoginPanel(props: Readonly<{
           value={loginForm.password}
           onChange={(event) => onLoginFormChange((prev) => ({ ...prev, password: event.target.value }))}
           placeholder={loginForm.role === "driver_token" ? "Driver token" : "Password"}
-          className="w-full rounded-xl border border-slate-600 bg-[#061B34] px-4 py-3 pr-20 text-sm text-white outline-none ring-cyan-300 placeholder:text-slate-400 focus:ring-2"
+          className="w-full rounded-lg border border-slate-300 bg-white px-4 py-3 pr-20 text-sm text-slate-950 outline-none placeholder:text-slate-400 focus:border-slate-950 focus:ring-2 focus:ring-slate-200"
         />
         <button
           type="button"
           onClick={onTogglePassword}
           aria-label={showLoginPassword ? "Hide password" : "Show password"}
-          className="absolute right-3 top-1/2 -translate-y-1/2 text-cyan-200 hover:text-cyan-100"
+          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-950"
         >
           {showLoginPassword ? (
             <svg viewBox="0 0 24 24" aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -837,14 +812,14 @@ function LoginPanel(props: Readonly<{
         </button>
       </div>
 
-      <p className="text-xs uppercase tracking-wider text-slate-300">Login As</p>
-      <div className="grid gap-3 sm:grid-cols-4">
+      <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Workspace</p>
+      <div className="grid gap-2 sm:grid-cols-4">
         {(["client", "carrier", "driver_token", "driver"] as LoginRole[]).map((role) => (
           <button
             key={role}
             type="button"
             onClick={() => onSetRole(role)}
-            className={`rounded-xl px-4 py-3 text-sm font-semibold transition ${getLoginRoleClass(role, loginForm.role === role)}`}
+            className={`rounded-lg px-3 py-3 text-sm font-semibold transition ${getLoginRoleClass(role, loginForm.role === role)}`}
           >
             {getLoginRoleLabel(role)}
           </button>
@@ -852,15 +827,15 @@ function LoginPanel(props: Readonly<{
       </div>
 
       <div className="flex flex-wrap gap-3">
-        <button type="button" onClick={onLogin} disabled={submitting === "login"} className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-[#031227] hover:bg-slate-100">
-          {submitting === "login" ? "Signing In..." : "Continue to Dashboard"}
+        <button type="button" onClick={onLogin} disabled={submitting === "login"} className="rounded-lg bg-slate-950 px-4 py-3 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60">
+          {submitting === "login" ? "Authorizing..." : "Access workspace"}
         </button>
         {loginForm.role !== "driver_token" && (
-          <button type="button" onClick={onForgotPassword} className="rounded-xl border border-slate-500 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10">
+          <button type="button" onClick={onForgotPassword} className="rounded-lg border border-slate-300 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-100">
             Forgot password
           </button>
         )}
-        <button type="button" onClick={onBack} className="rounded-xl border border-slate-500 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10">
+        <button type="button" onClick={onBack} className="rounded-lg border border-slate-300 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-100">
           Back
         </button>
       </div>
@@ -879,8 +854,8 @@ function ForgotPasswordPanel(props: Readonly<{
 
   return (
     <div className="mt-6 space-y-4">
-      <p className="text-xs uppercase tracking-wider text-slate-300">Reset Password</p>
-      <p className="text-sm text-slate-200">
+      <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Credential recovery</p>
+      <p className="text-sm leading-6 text-slate-600">
         Enter the email address associated with your account. We will send password reset instructions if the account exists.
       </p>
       <input
@@ -888,13 +863,13 @@ function ForgotPasswordPanel(props: Readonly<{
         value={email}
         onChange={(event) => onEmailChange(event.target.value)}
         placeholder="Email"
-        className="w-full rounded-xl border border-slate-600 bg-[#061B34] px-4 py-3 text-sm text-white outline-none ring-cyan-300 placeholder:text-slate-400 focus:ring-2"
+        className="w-full rounded-lg border border-slate-300 bg-white px-4 py-3 text-sm text-slate-950 outline-none placeholder:text-slate-400 focus:border-slate-950 focus:ring-2 focus:ring-slate-200"
       />
       <div className="flex flex-wrap gap-3">
-        <button type="button" onClick={onSubmit} disabled={submitting === "forgot_password"} className="rounded-xl bg-white px-4 py-3 text-sm font-semibold text-[#031227] hover:bg-slate-100 disabled:opacity-60">
+        <button type="button" onClick={onSubmit} disabled={submitting === "forgot_password"} className="rounded-lg bg-slate-950 px-4 py-3 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60">
           {submitting === "forgot_password" ? "Sending..." : "Send Reset Link"}
         </button>
-        <button type="button" onClick={onBack} className="rounded-xl border border-slate-500 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/10">
+        <button type="button" onClick={onBack} className="rounded-lg border border-slate-300 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-100">
           Back to Login
         </button>
       </div>
@@ -1112,20 +1087,16 @@ function PageShell(props: Readonly<{
   onBackToLogin: () => void;
   onLoginFormChange: (updater: (prev: LoginState) => LoginState) => void;
   onSignupFormChange: (updater: (prev: SignupState) => SignupState) => void;
-  onToggleVehicleType: (value: string) => void;
   onRequestSignupCode: () => void;
   onBackToRoleSelection: () => void;
   onBackToSignupForm: () => void;
   onBackToSignupVerification: () => void;
-  onBackToSignupIdentity: () => void;
-  onBackToSignupProfile: () => void;
   onSelectResourceSection: (section: ResourceSection) => void;
   onSignup: () => void;
   onStartDiditVerification: () => void;
   onBeginSignupVerification: () => void;
   onContinueRoleSelection: () => void;
   onVerifySignupEmail: () => void;
-  onContinueSignupProfile: () => void;
   onBackToLanding: () => void;
 }>) {
   const {
@@ -1156,25 +1127,22 @@ function PageShell(props: Readonly<{
     onBackToLogin,
     onLoginFormChange,
     onSignupFormChange,
-    onToggleVehicleType,
     onRequestSignupCode,
     onBackToRoleSelection,
     onBackToSignupForm,
     onBackToSignupVerification,
-    onBackToSignupIdentity,
-    onBackToSignupProfile,
     onSelectResourceSection,
     onSignup,
     onStartDiditVerification,
     onBeginSignupVerification,
     onContinueRoleSelection,
     onVerifySignupEmail,
-    onContinueSignupProfile,
     onBackToLanding,
   } = props;
 
   const isPricingView = view === "pricing";
   const isResourcesView = view === "resources";
+  const isLoginExperience = view === "login" || view === "forgot_password";
   let mainClass = "relative min-h-screen overflow-hidden bg-[#020B16] text-white";
   if (isAboutView) {
     mainClass = "relative min-h-screen overflow-hidden bg-white text-slate-900";
@@ -1182,6 +1150,8 @@ function PageShell(props: Readonly<{
     mainClass = "relative min-h-screen overflow-hidden bg-black text-white";
   } else if (isResourcesView) {
     mainClass = "relative min-h-screen overflow-hidden bg-white text-slate-900";
+  } else if (isLoginExperience) {
+    mainClass = "relative min-h-screen overflow-hidden bg-[#111827] text-slate-900";
   }
 
   let content: React.ReactNode;
@@ -1205,10 +1175,17 @@ function PageShell(props: Readonly<{
     );
   } else {
     content = (
-      <section className="w-full max-w-xl rounded-3xl border border-cyan-300/25 bg-[#031227]/75 p-7 text-white shadow-[0_20px_80px_rgba(0,0,0,0.45)] backdrop-blur-sm md:p-9">
+      <section className={`w-full ${isLoginExperience ? "max-w-lg rounded-xl border border-slate-200 bg-[#f8fafc] p-7 text-slate-950 shadow-[0_28px_90px_rgba(0,0,0,0.32)] md:p-9" : "max-w-xl rounded-3xl border border-cyan-300/25 bg-[#031227]/75 p-7 text-white shadow-[0_20px_80px_rgba(0,0,0,0.45)] backdrop-blur-sm md:p-9"}`}>
+        {isLoginExperience && (
+          <div className="border-b border-slate-200 pb-5">
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">LynkXpress Control</p>
+            <h1 className="mt-2 text-2xl font-semibold text-slate-950">{view === "login" ? "Operations sign in" : "Restore account access"}</h1>
+            <p className="mt-2 text-sm leading-6 text-slate-600">Secure access for freight operations, dispatch, and carrier workflows.</p>
+          </div>
+        )}
         {view === "landing" && <LandingPanel message={message} />}
         {view !== "landing" && message && (
-          <p className="mb-4 rounded-xl border border-amber-300/50 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+          <p className={`mb-4 rounded-lg border px-4 py-3 text-sm ${isLoginExperience ? "border-amber-300 bg-amber-50 text-amber-900" : "border-amber-300/50 bg-amber-500/10 text-amber-100"}`}>
             {message}
           </p>
         )}
@@ -1255,21 +1232,21 @@ function PageShell(props: Readonly<{
           />
         )}
         {view === "signup_identity" && <SignupIdentityPanel signupForm={signupForm} submitting={submitting} onSignupFormChange={onSignupFormChange} onStart={onStartDiditVerification} onBack={onBackToSignupVerification} />}
-        {view === "signup_profile" && <SignupProfilePanel signupForm={signupForm} onSignupFormChange={onSignupFormChange} onToggleVehicleType={onToggleVehicleType} onContinue={onContinueSignupProfile} onBack={onBackToSignupIdentity} />}
-        {view === "signup_review" && <SignupReviewPanel signupForm={signupForm} submitting={submitting} onSubmit={onSignup} onBack={onBackToSignupProfile} />}
-        {view === "signup_submitted" && <SignupSubmittedPanel onBackToLogin={onBackToLogin} />}
+        {view === "signup_verified" && <SignupVerifiedPanel signupForm={signupForm} submitting={submitting} onContinue={onSignup} />}
       </section>
     );
   }
 
   return (
     <main className={mainClass}>
-      {!isAboutView && !isPricingView && !isResourcesView && (
+      {!isAboutView && !isPricingView && !isResourcesView && !isLoginExperience && (
         <>
           <GlobeMarketJourneyBackground />
           <div className="absolute inset-0 bg-gradient-to-b from-[#020B16]/35 via-[#020B16]/70 to-[#020B16]/90" />
         </>
       )}
+
+      {isLoginExperience && <div className="auth-control-grid absolute inset-0" />}
 
       {isPricingView && (
         <>
@@ -1420,8 +1397,8 @@ export default function Home() {
             .then(() => {
               setSignupForm({ ...savedForm, diditSessionId: sessionId });
               globalThis.window.sessionStorage.removeItem("freightaxis.didit.signup");
-              setView("signup_profile");
-              setMessage("Identity verification approved. Continue with your role-specific profile.");
+              setView("signup_verified");
+              setMessage("");
             })
             .catch(() => {
               setSignupForm({ ...savedForm, diditSessionId: "" });
@@ -1655,9 +1632,11 @@ export default function Home() {
       });
 
       trackEvent("auth.sign_up", { role: account.role, displayName: account.company_name });
-    setLoginForm({ email: account.email, password: "", role: account.role });
-    setMessage("Application submitted for review. Sign in after your account is activated.");
-    setView("login");
+      setAuthLiteSession(account.role, account.company_name, account.email);
+      setActiveSessionName(account.company_name);
+      setActiveSessionRole(account.role);
+      setMessage("");
+      navigateToDashboard(account.role);
     } catch (error: unknown) {
       setMessage(getErrorMessage(error));
     } finally {
@@ -1680,26 +1659,6 @@ export default function Home() {
     } finally {
       setSubmitting(null);
     }
-  }
-
-  function toggleSignupCarrierVehicleType(value: string) {
-    setSignupForm((prev) => ({
-      ...prev,
-      vehicleTypes: prev.vehicleTypes.includes(value) ? prev.vehicleTypes.filter((item) => item !== value) : [...prev.vehicleTypes, value],
-    }));
-  }
-
-  function continueSignupProfile() {
-    if (!signupForm.phone.trim()) {
-      setMessage("Enter a contact phone number for your application.");
-      return;
-    }
-    if (signupForm.role !== "carrier" && !signupForm.profileNotes.trim()) {
-      setMessage("Complete your role-specific profile before review.");
-      return;
-    }
-    setMessage("");
-    setView("signup_review");
   }
 
   return (
@@ -1737,7 +1696,6 @@ export default function Home() {
         onBackToLogin={() => setView("login")}
         onLoginFormChange={setLoginForm}
         onSignupFormChange={setSignupForm}
-        onToggleVehicleType={toggleSignupCarrierVehicleType}
         onRequestSignupCode={requestSignupCode}
         onBackToRoleSelection={() => {
           setMessage("");
@@ -1751,14 +1709,6 @@ export default function Home() {
           setMessage("");
           setView("signup_verify");
         }}
-        onBackToSignupIdentity={() => {
-          setMessage("");
-          setView("signup_identity");
-        }}
-        onBackToSignupProfile={() => {
-          setMessage("");
-          setView("signup_profile");
-        }}
         onSelectResourceSection={setResourceSection}
         onSignup={signup}
         onStartDiditVerification={startDiditVerification}
@@ -1768,7 +1718,6 @@ export default function Home() {
           setView("signup");
         }}
         onVerifySignupEmail={verifySignupEmail}
-        onContinueSignupProfile={continueSignupProfile}
         onBackToLanding={() => {
           setMessage("");
           setView("landing");

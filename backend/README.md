@@ -46,6 +46,15 @@ $env:GOOGLE_DIRECTIONS_URL="https://maps.googleapis.com/maps/api/directions/json
 
 If `GOOGLE_MAPS_API_KEY` is not set or the API call fails, matching and route optimization automatically fall back to built-in heuristics.
 
+Optional: configure a running OSRM instance for road distance and duration. OSRM is preferred for carrier matching, live ETA, and route analysis when both locations can be resolved to coordinates. Google Maps and the existing heuristic remain fallbacks.
+
+```powershell
+$env:OSRM_BASE_URL="http://127.0.0.1:5000"
+$env:OSRM_REQUEST_TIMEOUT_SECONDS="5"
+```
+
+For a Docker container published on a different host or port, set `OSRM_BASE_URL` to that route service base URL instead.
+
 Optional: configure EIA live fuel prices (U.S. Energy Information Administration) for route cost analysis.
 
 ```powershell

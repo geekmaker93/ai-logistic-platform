@@ -48,6 +48,9 @@ export type CarrierSettings = {
   toll_discount_pct: number;
   fuel_price_adjustment_pct: number;
   empty_mile_factor_pct: number;
+  include_maintenance_cost: boolean;
+  include_driver_time_cost: boolean;
+  include_toll_cost: boolean;
   updated_at: string;
 };
 
@@ -226,6 +229,21 @@ export type RouteOption = {
   traffic_delay_minutes: number;
   score: number;
   recommendation_reason: string;
+  economic: EconomicBreakdown | null;
+};
+
+export type EconomicBreakdown = {
+  fuel_cost_usd: number;
+  toll_cost_usd: number;
+  maintenance_cost_usd: number;
+  time_cost_usd: number;
+  weather_risk_cost_usd: number;
+  total_operating_cost_usd: number;
+  carrier_profit_cost_usd: number | null;
+  cost_per_km_usd: number;
+  cost_per_mile_usd: number;
+  projected_profit_usd: number | null;
+  projected_margin_pct: number | null;
 };
 
 export type RouteAnalysis = {
@@ -244,6 +262,14 @@ export type RouteAnalysis = {
   routes: RouteOption[];
   best_route: RouteOption;
   selected_route: RouteOption | null;
+  ai_recommendation: AiRouteRecommendation;
+};
+
+export type AiRouteRecommendation = {
+  recommended_route: string;
+  reason: string;
+  tradeoffs: string[];
+  source: "ollama" | "deterministic_fallback";
 };
 
 export type Shipment = {
@@ -671,6 +697,9 @@ export function updateUserProfile(
       toll_discount_pct?: number;
       fuel_price_adjustment_pct?: number;
       empty_mile_factor_pct?: number;
+      include_maintenance_cost?: boolean;
+      include_driver_time_cost?: boolean;
+      include_toll_cost?: boolean;
     };
   }
 ) {
@@ -964,10 +993,10 @@ export function createShipmentPaymentCheckoutSession(
   }, actor);
 }
 
-export function optimizeRoute(shipmentId: string, mode: OptimizationMode, actor: ActorContext) {
+export function optimizeRoute(shipmentId: string, mode: OptimizationMode, actor: ActorContext, routeName?: string) {
   return request<Shipment>(`/shipments/${shipmentId}/optimize-route`, {
     method: "POST",
-    body: JSON.stringify({ mode }),
+    body: JSON.stringify({ mode, route_name: routeName }),
   }, actor);
 }
 

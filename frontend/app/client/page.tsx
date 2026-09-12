@@ -1786,17 +1786,17 @@ export default function ClientPortalPage() {
   return (
     <main className="shipper-portal-shell min-h-screen px-4 py-6 text-slate-900 md:px-8 md:py-10">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-8">
-        <header className="shipper-hero-card shipper-fade-up rounded-[36px] bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.18),_transparent_24%),linear-gradient(135deg,#0b1220_0%,#1a1745_46%,#0b5f59_100%)] p-8 text-white md:p-10">
+        <header className="shipper-hero-card shipper-fade-up rounded-xl p-8 text-white md:p-10">
           <div className="relative z-10 grid gap-8 xl:grid-cols-[1.35fr_0.85fr] xl:items-start">
             <div>
               <div className="inline-flex rounded-full border border-white/15 bg-white/10 px-4 py-1.5 text-[11px] font-semibold uppercase tracking-[0.28em] text-cyan-100">
-                Shipper workspace
+                Shipper operations
               </div>
               <h1 className="mt-5 max-w-4xl text-4xl font-semibold tracking-[-0.03em] text-white md:text-5xl">
-                Dispatch, pay, and track freight from one polished command center.
+                Freight operations, under control.
               </h1>
               <p className="mt-4 max-w-3xl text-base leading-7 text-slate-200 md:text-lg">
-                Access the LynkXpress network to create shipment requests, compare carrier offers, release payments, and monitor live movement with a dashboard that feels client-ready instead of back-office.
+                Create loads, compare carrier offers, approve payment, and follow live movement from one operational workspace.
               </p>
               <div className="mt-6 flex flex-wrap gap-3 text-sm text-white/90">
                 <div className="rounded-full border border-white/12 bg-white/10 px-4 py-2">{profile?.company_name || session?.displayName || "LynkXpress shipper account"}</div>
@@ -1855,12 +1855,12 @@ export default function ClientPortalPage() {
               </div>
 
               <div className="grid w-full gap-4 sm:grid-cols-2 xl:w-[360px]">
-                <div className="rounded-[28px] border border-white/12 bg-white/10 p-5 backdrop-blur-sm">
+                <div className="rounded-lg border border-white/12 bg-white/10 p-5 backdrop-blur-sm">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-cyan-100/80">Profile readiness</p>
                   <p className="mt-3 text-3xl font-semibold">{profileCompletion}%</p>
                   <p className="mt-2 text-sm leading-6 text-slate-200">Your shipper profile, routing details, and billing footprint are visible at a glance.</p>
                 </div>
-                <div className="rounded-[28px] border border-white/12 bg-white/10 p-5 backdrop-blur-sm">
+                <div className="rounded-lg border border-white/12 bg-white/10 p-5 backdrop-blur-sm">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-emerald-100/80">Delivered value</p>
                   <p className="mt-3 text-3xl font-semibold">{formatUsdCompact(deliveredRevenue)}</p>
                   <p className="mt-2 text-sm leading-6 text-slate-200">Completed shipment spend that has already moved through the platform.</p>
@@ -1872,12 +1872,12 @@ export default function ClientPortalPage() {
 
         {message && <p className="shipper-premium-card shipper-fade-up rounded-[24px] border border-cyan-200 bg-cyan-50/90 px-5 py-4 text-sm font-medium text-cyan-950">{message}</p>}
 
-        <section className="shipper-premium-card shipper-fade-up rounded-[30px] p-4 md:p-5">
+        <section className="shipper-premium-card shipper-fade-up rounded-xl p-3 md:p-4">
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
               onClick={() => setActiveTab("dashboard")}
-              className={`shipper-tab-pill rounded-full px-4 py-2.5 text-sm font-semibold transition ${
+              className={`shipper-tab-pill rounded-lg px-4 py-2.5 text-sm font-semibold transition ${
                 activeTab === "dashboard"
                   ? "bg-slate-950 text-white shadow-lg shadow-slate-900/15"
                   : "border border-slate-300/80 bg-white/90 text-slate-700 hover:bg-slate-100"
