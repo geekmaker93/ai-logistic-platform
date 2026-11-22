@@ -4,6 +4,15 @@
       <div className="journey-starfield" />
 
       <div className="journey-globe-stage absolute inset-0 flex items-center justify-center">
+        <div className="journey-textured-globe" aria-hidden="true">
+          <span className="journey-globe-star journey-globe-star-a" />
+          <span className="journey-globe-star journey-globe-star-b" />
+          <span className="journey-globe-star journey-globe-star-c" />
+          <span className="journey-globe-star journey-globe-star-d" />
+          <span className="journey-globe-star journey-globe-star-e" />
+          <span className="journey-globe-star journey-globe-star-f" />
+          <span className="journey-globe-star journey-globe-star-g" />
+        </div>
         <svg className="h-full w-full" viewBox="0 0 1600 1200" aria-hidden="true">
           <defs>
             <radialGradient id="journey-globe-ocean" cx="34%" cy="28%" r="70%">

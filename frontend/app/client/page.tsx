@@ -239,6 +239,10 @@ const truckTypeOptions = [
 const STRIPE_PUBLISHABLE_KEY = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY?.trim() || "";
 
 function openStripeHostedFlow(url: string): boolean {
+  if (!url.trim()) {
+    return false;
+  }
+
   const popupWidth = 560;
   const popupHeight = 760;
   const left = Math.max(0, globalThis.window.screenX + Math.round((globalThis.window.outerWidth - popupWidth) / 2));
@@ -250,6 +254,27 @@ function openStripeHostedFlow(url: string): boolean {
     globalThis.window.location.href = url;
     return false;
   }
+
+  const handleCheckoutComplete = (event: MessageEvent) => {
+    if (
+      event.origin !== globalThis.window.location.origin ||
+      event.source !== popup ||
+      event.data?.type !== "stripe-checkout-complete"
+    ) {
+      return;
+    }
+    globalThis.window.removeEventListener("message", handleCheckoutComplete);
+    globalThis.window.location.reload();
+  };
+  globalThis.window.addEventListener("message", handleCheckoutComplete);
+
+  const refreshWhenClosed = globalThis.window.setInterval(() => {
+    if (popup.closed) {
+      globalThis.window.clearInterval(refreshWhenClosed);
+      globalThis.window.removeEventListener("message", handleCheckoutComplete);
+      globalThis.window.location.reload();
+    }
+  }, 500);
 
   popup.focus();
   return true;
@@ -665,18 +690,16 @@ export default function ClientPortalPage() {
     try {
       const origin = globalThis.window.location.origin;
       const response = await createSubscriptionCheckoutSession(session.email, "client", {
-        return_url: `${origin}/client?billing=success`,
+        success_url: `${origin}/client?billing=success&popup=1`,
+        cancel_url: `${origin}/client?billing=cancel&popup=1`,
       });
       setCheckoutLoading(false);
-      if (response.client_secret) {
-        setEmbeddedCheckout({
-          clientSecret: response.client_secret,
-          title: "Subscribe for $25.00 / month",
-        });
-        setMessage("Checkout is ready below.");
-      } else {
-        setMessage("Stripe did not return an embedded checkout secret.");
-      }
+      const openedPopup = openStripeHostedFlow(response.checkout_url);
+      setMessage(
+        openedPopup
+          ? "Stripe checkout opened in a popup. Complete payment there and this page will refresh automatically."
+          : "Redirecting to Stripe checkout..."
+      );
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Failed to start checkout.");
       setCheckoutLoading(false);
@@ -791,9 +814,18 @@ export default function ClientPortalPage() {
 
     const params = new URLSearchParams(globalThis.window.location.search);
     const billingState = params.get("billing");
+    const isCheckoutPopup = params.get("popup") === "1" && Boolean(globalThis.window.opener);
     const walletState = params.get("wallet");
     const walletInstrument = params.get("instrument");
     const shouldRefresh = billingState === "success";
+    if (isCheckoutPopup && billingState) {
+      globalThis.window.opener?.postMessage(
+        { type: "stripe-checkout-complete", billingState },
+        globalThis.window.location.origin
+      );
+      globalThis.window.close();
+      return;
+    }
     if (billingState === "success") {
       setMessage("Subscription payment received. Refreshing your access...");
     } else if (billingState === "cancel") {
@@ -1806,6 +1838,24 @@ export default function ClientPortalPage() {
             </div>
 
             <div className="flex flex-col gap-4 xl:items-end">
+              <div
+                className={`carrier-live-status shipper-live-status ${isSubscriptionActive ? "" : "carrier-live-status-standby"}`}
+                role="status"
+                aria-label={isSubscriptionActive ? "Shipper operations live" : "Shipper operations standby"}
+              >
+                <div className="carrier-live-status-copy">
+                  <span className="carrier-live-status-dot" />
+                  <span>{isSubscriptionActive ? "Operations live" : "Operations standby"}</span>
+                </div>
+                <div className="carrier-live-pulse-track" aria-hidden="true">
+                  <span className="carrier-live-pulse carrier-live-pulse-one" />
+                  <span className="carrier-live-pulse carrier-live-pulse-two" />
+                  <span className="carrier-live-pulse carrier-live-pulse-three" />
+                </div>
+                <span className="carrier-live-status-caption">
+                  {isSubscriptionActive ? "Realtime shipment layer active" : "Awaiting active subscription"}
+                </span>
+              </div>
               <div className="flex flex-wrap justify-end gap-2">
                 <div className="relative" ref={accountMenuRef}>
                   <button
