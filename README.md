@@ -29,6 +29,20 @@ npm run dev
 
 The frontend expects the backend at http://127.0.0.1:8000 by default.
 
+## Deploy on Vercel
+
+Import the repository as a Vercel project with the repository root as the project
+root. The root `vercel.json` builds the Next.js frontend and FastAPI backend as
+separate services, routing `/api/*` requests to FastAPI and other requests to
+Next.js. Browser API requests use `/api` on deployed domains; local development
+continues to use port 8000.
+
+Set the required application environment variables in Vercel. In particular,
+configure `DATABASE_URL` with a persistent hosted PostgreSQL database; the
+backend's SQLite fallback is local and is not suitable for persistent Vercel
+deployments. Add the production Stripe, email, and other integration credentials
+as needed in Vercel's environment settings.
+
 ## MVP Workflow
 
 1. Create shipment

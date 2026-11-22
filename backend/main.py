@@ -1254,7 +1254,11 @@ carrier_directory: list[CarrierProfile] = [
 ]
 
 
-app = FastAPI(title="AI Logistics MVP API", version="0.2.0")
+app = FastAPI(
+	title="AI Logistics MVP API",
+	version="0.2.0",
+	root_path="/api" if os.getenv("VERCEL") else "",
+)
 
 allowed_origins = [FRONTEND_BASE_URL] if FRONTEND_BASE_URL else []
 parsed_frontend = urlparse(FRONTEND_BASE_URL)

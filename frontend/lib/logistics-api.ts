@@ -464,7 +464,8 @@ function resolveApiBase(): string {
     return configuredBase;
   }
   if (globalThis.window !== undefined) {
-    return `http://${globalThis.window.location.hostname}:8000`;
+    const { hostname, origin, port } = globalThis.window.location;
+    return port ? `http://${hostname}:8000` : `${origin}/api`;
   }
   return "http://127.0.0.1:8000";
 }
