@@ -1,4 +1,4 @@
-import { createClient, type RealtimeChannel } from "@supabase/supabase-js";
+import { createClient, type RealtimeChannel, type SupabaseClient } from "@supabase/supabase-js";
 import { getAuthLiteSession } from "@/lib/auth-lite";
 
 export type SupportRole = "client" | "carrier" | "support";
@@ -44,20 +44,99 @@ type LegacySupportMessage = {
   created_at: string;
 };
 
+type SupportDatabase = {
+  public: {
+    Tables: {
+      support_sessions: {
+        Row: ChatSession;
+        Insert: {
+          id?: string;
+          user_id: string;
+          agent_id: string | null;
+          status: "pending" | "active" | "closed";
+          created_at?: string;
+          started_at: string | null;
+          closed_at: string | null;
+        };
+        Update: Partial<ChatSession>;
+        Relationships: [];
+      };
+      chat_sessions: {
+        Row: LegacyChatSession;
+        Insert: {
+          id?: string;
+          user_id: string;
+          status: string;
+          created_at?: string;
+          closed_at: string | null;
+        };
+        Update: Partial<LegacyChatSession>;
+        Relationships: [];
+      };
+      messages: {
+        Row: ChatMessage;
+        Insert: Omit<ChatMessage, "id" | "created_at"> & {
+          id?: string;
+          created_at?: string;
+        };
+        Update: Partial<ChatMessage>;
+        Relationships: [];
+      };
+      support_messages: {
+        Row: LegacySupportMessage;
+        Insert: Omit<LegacySupportMessage, "id" | "created_at"> & {
+          id?: string;
+          created_at?: string;
+        };
+        Update: Partial<LegacySupportMessage>;
+        Relationships: [];
+      };
+    };
+    Views: Record<string, never>;
+    Functions: Record<string, never>;
+    Enums: Record<string, never>;
+    CompositeTypes: Record<string, never>;
+  };
+};
+
+type LegacyChatSession = {
+  id: string;
+  user_id: string;
+  status: string;
+  created_at: string;
+  closed_at: string | null;
+};
+
+function normalizeLegacyChatSession(
+  data: LegacyChatSession,
+  agentId: string | null = null,
+  startedAt: string | null = null,
+): ChatSession {
+  return {
+    id: data.id,
+    user_id: data.user_id,
+    agent_id: agentId,
+    status: data.status === "open" ? "pending" : data.status === "active" ? "active" : "closed",
+    created_at: data.created_at,
+    started_at: startedAt,
+    closed_at: data.closed_at,
+  };
+}
+
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://xmvhjokvnmnzwxwxsfxm.supabase.co";
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_kZK9yBB-Ars-T7a4VGF_ag_Qvj9Uy2h";
 
 const CHAT_SESSION_USER_KEY = "support-chat-user-id";
 const CHAT_SESSION_ID_KEY = "support-chat-session-id";
 
-let browserClient: ReturnType<typeof createClient> | null = null;
+let browserClient: SupabaseClient<SupportDatabase> | null = null;
 
-export function getSupportSupabaseClient() {
+export function getSupportSupabaseClient(): SupabaseClient<SupportDatabase> {
   if (browserClient) {
     return browserClient;
   }
 
-  browserClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  browserClient = createClient<SupportDatabase>(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
@@ -162,7 +241,7 @@ export async function fetchLatestChatSession(): Promise<ChatSession | null> {
       throw error;
     }
 
-    return data ? { ...data, agent_id: null, started_at: null } : null;
+    return data ? normalizeLegacyChatSession(data as LegacyChatSession) : null;
   }
 }
 
@@ -191,11 +270,11 @@ export async function fetchChatSession(sessionId: string): Promise<ChatSession |
       throw error;
     }
 
-    return data ? { ...data, agent_id: null, started_at: null } : null;
+    return data ? normalizeLegacyChatSession(data as LegacyChatSession) : null;
   }
 }
 
-export async function createChatSession(): Promise<ChatSession> {
+export async function createChatSession(_actor?: SupportActor | null): Promise<ChatSession> {
   const supabase = getSupportSupabaseClient();
   const userId = getOrCreateBrowserUserId();
   try {
@@ -232,7 +311,7 @@ export async function createChatSession(): Promise<ChatSession> {
       throw error;
     }
 
-    const nextSession: ChatSession = { ...data, agent_id: null, started_at: null };
+    const nextSession = normalizeLegacyChatSession(data as LegacyChatSession);
     setStoredChatSessionId(nextSession.id);
     return nextSession;
   }
@@ -266,7 +345,7 @@ export async function closeChatSession(sessionId: string): Promise<ChatSession> 
       throw error;
     }
 
-    return { ...data, agent_id: null, started_at: null };
+    return normalizeLegacyChatSession(data as LegacyChatSession);
   }
 }
 
@@ -329,7 +408,7 @@ export async function sendSupportMessage(actor: SupportActor, body: string, sess
   }
 
   const session = await fetchChatSession(sessionId);
-  if (session?.status && session.status !== "active" && session.status !== "open") {
+  if (session?.status && session.status !== "active" && session.status !== "pending") {
     throw new Error("Messages can only be sent after support accepts the request.");
   }
 
@@ -392,7 +471,7 @@ export async function fetchPendingSupportSessions(): Promise<ChatSession[]> {
       throw error;
     }
 
-    return (data || []).map((row) => ({ ...row, agent_id: null, started_at: null }));
+    return (data || []).map((row) => normalizeLegacyChatSession(row as LegacyChatSession));
   }
 }
 
@@ -425,6 +504,6 @@ export async function acceptSupportSession(sessionId: string, agent: SupportActo
       throw error;
     }
 
-    return { ...data, agent_id: agent.key, started_at: nowIso };
+    return normalizeLegacyChatSession(data as LegacyChatSession, agent.key, nowIso);
   }
 }
