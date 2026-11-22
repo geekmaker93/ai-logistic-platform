@@ -261,6 +261,10 @@ function CarrierActivityChart(props: Readonly<{
 }
 
 function openStripeHostedFlow(url: string): boolean {
+  if (!url.trim()) {
+    return false;
+  }
+
   const popupWidth = 560;
   const popupHeight = 760;
   const left = Math.max(0, globalThis.window.screenX + Math.round((globalThis.window.outerWidth - popupWidth) / 2));
@@ -272,6 +276,27 @@ function openStripeHostedFlow(url: string): boolean {
     globalThis.window.location.href = url;
     return false;
   }
+
+  const handleCheckoutComplete = (event: MessageEvent) => {
+    if (
+      event.origin !== globalThis.window.location.origin ||
+      event.source !== popup ||
+      event.data?.type !== "stripe-checkout-complete"
+    ) {
+      return;
+    }
+    globalThis.window.removeEventListener("message", handleCheckoutComplete);
+    globalThis.window.location.reload();
+  };
+  globalThis.window.addEventListener("message", handleCheckoutComplete);
+
+  const refreshWhenClosed = globalThis.window.setInterval(() => {
+    if (popup.closed) {
+      globalThis.window.clearInterval(refreshWhenClosed);
+      globalThis.window.removeEventListener("message", handleCheckoutComplete);
+      globalThis.window.location.reload();
+    }
+  }, 500);
 
   popup.focus();
   return true;
@@ -1148,13 +1173,13 @@ export default function CarrierPortalPage() {
     try {
       const origin = globalThis.window.location.origin;
       const response = await createSubscriptionCheckoutSession(session.email, "carrier", {
-        success_url: `${origin}/carrier?billing=success`,
-        cancel_url: `${origin}/carrier?billing=cancel`,
+        success_url: `${origin}/carrier?billing=success&popup=1`,
+        cancel_url: `${origin}/carrier?billing=cancel&popup=1`,
       });
       const openedPopup = openStripeHostedFlow(response.checkout_url);
       setCheckoutLoading(false);
       if (openedPopup) {
-        setMessage("Stripe checkout opened in a popup. Complete payment there, then return and click Refresh Status.");
+        setMessage("Stripe checkout opened in a popup. Complete payment there and this page will refresh automatically.");
       }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Failed to start checkout.");
@@ -1400,9 +1425,18 @@ export default function CarrierPortalPage() {
 
     const params = new URLSearchParams(globalThis.window.location.search);
     const billingState = params.get("billing");
+    const isCheckoutPopup = params.get("popup") === "1" && Boolean(globalThis.window.opener);
     const walletState = params.get("wallet");
     const walletInstrument = params.get("instrument");
     const shouldRefresh = billingState === "success";
+    if (isCheckoutPopup && billingState) {
+      globalThis.window.opener?.postMessage(
+        { type: "stripe-checkout-complete", billingState },
+        globalThis.window.location.origin
+      );
+      globalThis.window.close();
+      return;
+    }
     if (billingState === "success") {
       setMessage("Subscription payment received. Refreshing your access...");
     } else if (billingState === "cancel") {
@@ -2549,6 +2583,24 @@ export default function CarrierPortalPage() {
             </div>
 
             <div className="flex flex-col gap-4 xl:items-end">
+              <div
+                className={`carrier-live-status ${isSubscriptionActive ? "" : "carrier-live-status-standby"}`}
+                role="status"
+                aria-label={isSubscriptionActive ? "Carrier operations live" : "Carrier operations standby"}
+              >
+                  <div className="carrier-live-status-copy">
+                    <span className="carrier-live-status-dot" />
+                    <span>{isSubscriptionActive ? "Operations live" : "Operations standby"}</span>
+                  </div>
+                  <div className="carrier-live-pulse-track" aria-hidden="true">
+                    <span className="carrier-live-pulse carrier-live-pulse-one" />
+                    <span className="carrier-live-pulse carrier-live-pulse-two" />
+                    <span className="carrier-live-pulse carrier-live-pulse-three" />
+                  </div>
+                  <span className="carrier-live-status-caption">
+                    {isSubscriptionActive ? "Realtime dispatch layer active" : "Awaiting active subscription"}
+                  </span>
+              </div>
               <div className="flex flex-wrap justify-end gap-2">
                 <div className="relative" ref={accountMenuRef}>
                   <button
@@ -2669,7 +2721,7 @@ export default function CarrierPortalPage() {
                 disabled={checkoutLoading || subscriptionLoading}
                 className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-500 disabled:opacity-60"
               >
-                {checkoutLoading ? "Redirecting..." : "Subscribe for $49.99"}
+                {checkoutLoading ? "Redirecting..." : `Subscribe for $${carrierPlan?.price_usd.toFixed(2) || "49.99"}`}
               </button>
               <button
                 type="button"
@@ -2738,6 +2790,16 @@ export default function CarrierPortalPage() {
               >
                 {subscriptionLoading ? "Checking..." : "Refresh Status"}
               </button>
+              {!isSubscriptionActive && (
+                <button
+                  type="button"
+                  onClick={() => void startSubscriptionCheckout()}
+                  disabled={checkoutLoading || subscriptionLoading}
+                  className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-500 disabled:opacity-60"
+                >
+                  {checkoutLoading ? "Redirecting..." : `Subscribe for $${carrierPlan?.price_usd.toFixed(2) || "49.99"}`}
+                </button>
+              )}
               {isSubscriptionActive && !subscriptionStatus?.subscription_cancel_at_period_end && (
                 <button
                   type="button"
@@ -4914,4 +4976,3 @@ export default function CarrierPortalPage() {
     </main>
   );
 }
-

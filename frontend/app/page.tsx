@@ -12,12 +12,16 @@ import {
 } from "@/lib/auth-lite";
 import GlobeMarketJourneyBackground from "@/app/components/globe-market-journey-background";
 import LiveChatSupport from "@/app/components/live-chat-support";
-import { AuthRole, confirmDiditSession, createDiditSession, driverLogin, loginAccount, requestPasswordReset, requestSignupVerificationCode, signupAccount, verifySignupEmailCode } from "@/lib/logistics-api";
+import { AuthRole, ResolutionCase, ResolutionCaseType, confirmDiditSession, createDiditSession, createResolutionCase, driverLogin, listResolutionCases, loginAccount, requestPasswordReset, requestSignupVerificationCode, signupAccount, verifySignupEmailCode } from "@/lib/logistics-api";
 import { trackEvent } from "@/lib/telemetry";
 
 type LoginRole = "client" | "carrier" | "driver_token" | "driver";
-type LandingView = "landing" | "pricing" | "resources" | "about" | "login" | "signup_role" | "signup" | "signup_verify" | "signup_identity" | "signup_verified" | "forgot_password";
+type LandingView = "landing" | "pricing" | "resources" | "about" | "resolution" | "resolution_status" | "login" | "signup_role" | "signup" | "signup_verify" | "signup_identity" | "signup_verified" | "forgot_password";
 type ResourceSection = "events";
+type AppearanceTheme = "light" | "dark";
+const ABOUT_PAGE_THEME: AppearanceTheme = "dark";
+const RESOURCES_PAGE_THEME: AppearanceTheme = "light";
+const DEFAULT_GLOW_INTENSITY = 100;
 
 type LoginState = {
   email: string;
@@ -214,8 +218,10 @@ function NavTabs(props: Readonly<{
   onOpenPricing: () => void;
   onOpenResources: () => void;
   onOpenAbout: () => void;
+  onOpenResolution: (caseType: ResolutionCaseType) => void;
+  onOpenResolutionStatus: () => void;
 }>) {
-  const { isAboutView, onOpenPricing, onOpenResources, onOpenAbout } = props;
+  const { isAboutView, onOpenPricing, onOpenResources, onOpenAbout, onOpenResolution, onOpenResolutionStatus } = props;
   const tabClass = isAboutView
     ? "text-slate-700 hover:border-slate-300 hover:bg-slate-100"
     : "text-slate-200 hover:border-cyan-300/40 hover:bg-cyan-500/10";
@@ -327,6 +333,7 @@ function NavTabs(props: Readonly<{
               type="button"
               onClick={() => {
                 setSupportMenuOpen(false);
+                onOpenResolution("freight_claim");
               }}
               className={`w-full rounded-lg px-3 py-2 text-left text-sm transition ${isAboutView ? "text-slate-800 hover:bg-slate-100" : "text-slate-100 hover:bg-cyan-500/20"}`}
             >
@@ -336,10 +343,32 @@ function NavTabs(props: Readonly<{
               type="button"
               onClick={() => {
                 setSupportMenuOpen(false);
+                onOpenResolution("dispute_charge");
               }}
               className={`w-full rounded-lg px-3 py-2 text-left text-sm transition ${isAboutView ? "text-slate-800 hover:bg-slate-100" : "text-slate-100 hover:bg-cyan-500/20"}`}
             >
               Dispute a Charge
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSupportMenuOpen(false);
+                onOpenResolution("shipment_issue");
+              }}
+              className={`w-full rounded-lg px-3 py-2 text-left text-sm transition ${isAboutView ? "text-slate-800 hover:bg-slate-100" : "text-slate-100 hover:bg-cyan-500/20"}`}
+            >
+              Report a Shipment Issue
+            </button>
+            <div className={`my-2 border-t ${isAboutView ? "border-slate-200" : "border-slate-600/70"}`} />
+            <button
+              type="button"
+              onClick={() => {
+                setSupportMenuOpen(false);
+                onOpenResolutionStatus();
+              }}
+              className={`w-full rounded-lg px-3 py-2 text-left text-sm font-semibold transition ${isAboutView ? "text-slate-800 hover:bg-slate-100" : "text-cyan-200 hover:bg-cyan-500/20"}`}
+            >
+              Check Case Status
             </button>
           </div>
         )}
@@ -431,6 +460,8 @@ function TopNavigation(props: Readonly<{
   onOpenPricing: () => void;
   onOpenResources: () => void;
   onOpenAbout: () => void;
+  onOpenResolution: (caseType: ResolutionCaseType) => void;
+  onOpenResolutionStatus: () => void;
   onToggleLoginMenu: () => void;
   onOpenRoleLogin: (role: LoginRole) => void;
   onCreateAccount: () => void;
@@ -446,6 +477,8 @@ function TopNavigation(props: Readonly<{
     onOpenPricing,
     onOpenResources,
     onOpenAbout,
+    onOpenResolution,
+    onOpenResolutionStatus,
     onToggleLoginMenu,
     onOpenRoleLogin,
     onCreateAccount,
@@ -464,6 +497,8 @@ function TopNavigation(props: Readonly<{
           onOpenPricing={onOpenPricing}
           onOpenResources={onOpenResources}
           onOpenAbout={onOpenAbout}
+          onOpenResolution={onOpenResolution}
+          onOpenResolutionStatus={onOpenResolutionStatus}
         />
         {activeSessionName ? (
           <SignedInControls isAboutView={isAboutView} activeSessionName={activeSessionName} onOpenProfile={onOpenProfile} onSignOut={onSignOut} />
@@ -547,59 +582,258 @@ function PricingPanel() {
   );
 }
 
-function ResourcesPanel(props: Readonly<{ section: ResourceSection; onSelectSection: (section: ResourceSection) => void }>) {
+function ResolutionCenterPanel(props: Readonly<{ initialCaseType: ResolutionCaseType }>) {
+  const [caseType, setCaseType] = useState<ResolutionCaseType>(props.initialCaseType);
+  const [contactName, setContactName] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [role, setRole] = useState<"client" | "carrier" | "guest">("guest");
+  const [subject, setSubject] = useState("");
+  const [description, setDescription] = useState("");
+  const [shipmentId, setShipmentId] = useState("");
+  const [paymentIntentId, setPaymentIntentId] = useState("");
+  const [transactionReference, setTransactionReference] = useState("");
+  const [requestedAmount, setRequestedAmount] = useState("");
+  const [attachments, setAttachments] = useState<Array<{ name: string; mime_type: string; base64: string }>>([]);
+  const [submitting, setSubmitting] = useState(false);
+  const [message, setMessage] = useState("");
+  const [submittedCase, setSubmittedCase] = useState<ResolutionCase | null>(null);
+
+  async function handleAttachments(files: FileList | null) {
+    if (!files) return;
+    const selected = Array.from(files).slice(0, 5);
+    const converted = await Promise.all(selected.map(async (file) => {
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+      return { name: file.name, mime_type: file.type || "application/octet-stream", base64 };
+    }));
+    setAttachments(converted);
+  }
+
+  async function submitCase() {
+    if (contactName.trim().length < 2 || !email.trim() || subject.trim().length < 5 || description.trim().length < 20) {
+      setMessage("Complete your name, email, subject, and a detailed description.");
+      return;
+    }
+    setSubmitting(true);
+    setMessage("");
+    try {
+      const submitted = await createResolutionCase({
+        case_type: caseType,
+        contact_name: contactName.trim(),
+        email: email.trim().toLowerCase(),
+        role,
+        phone: phone.trim() || null,
+        subject: subject.trim(),
+        description: description.trim(),
+        shipment_id: shipmentId.trim() || null,
+        payment_intent_id: paymentIntentId.trim() || null,
+        transaction_reference: transactionReference.trim() || null,
+        requested_amount_usd: requestedAmount.trim() ? Number(requestedAmount) : null,
+        attachments,
+      });
+      setSubmittedCase(submitted);
+      setMessage(`Case submitted successfully: ${submitted.case_number}`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to submit the case.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const caseLabel = caseType === "dispute_charge" ? "Dispute a Charge" : caseType === "freight_claim" ? "File a Freight Claim" : "Report a Shipment Issue";
+
+  return (
+    <div className="mt-8 w-full text-slate-900 md:mt-10">
+      <section className="mx-auto max-w-4xl rounded-3xl border border-slate-200 bg-white p-6 shadow-[0_20px_80px_rgba(15,23,42,0.12)] md:p-8">
+        <p className="text-xs font-bold uppercase tracking-[0.24em] text-cyan-700">Resolution Center</p>
+        <h1 className="mt-3 text-3xl font-semibold md:text-4xl">{caseLabel}</h1>
+        <p className="mt-3 text-sm leading-7 text-slate-600">Submit your complaint, supporting shipment details, and documents for LynkXpress review.</p>
+
+        <div className="mt-6 grid gap-4 sm:grid-cols-2">
+          {(["dispute_charge", "freight_claim", "shipment_issue"] as ResolutionCaseType[]).map((option) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => setCaseType(option)}
+              className={`rounded-xl border px-4 py-3 text-left text-sm font-semibold transition ${caseType === option ? "border-slate-950 bg-slate-950 text-white" : "border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-400"}`}
+            >
+              {option === "dispute_charge" ? "Dispute a Charge" : option === "freight_claim" ? "File a Freight Claim" : "Report a Shipment Issue"}
+            </button>
+          ))}
+          <input value={contactName} onChange={(event) => setContactName(event.target.value)} placeholder="Full name" className="rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-slate-950" />
+          <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="Email address" className="rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-slate-950" />
+          <input value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="Phone (optional)" className="rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-slate-950" />
+          <select value={role} onChange={(event) => setRole(event.target.value as "client" | "carrier" | "guest")} className="rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-slate-950">
+            <option value="guest">Guest / public submission</option>
+            <option value="client">Shipper</option>
+            <option value="carrier">Carrier</option>
+          </select>
+          <input value={subject} onChange={(event) => setSubject(event.target.value)} placeholder="Subject" className="rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-slate-950 sm:col-span-2" />
+          <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Describe the issue, charge, or claim in detail" rows={5} className="rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-slate-950 sm:col-span-2" />
+          <input value={shipmentId} onChange={(event) => setShipmentId(event.target.value)} placeholder="Shipment / load ID (optional)" className="rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-slate-950" />
+          <input value={paymentIntentId} onChange={(event) => setPaymentIntentId(event.target.value)} placeholder="Stripe payment intent ID (optional)" className="rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-slate-950" />
+          <input value={transactionReference} onChange={(event) => setTransactionReference(event.target.value)} placeholder="Invoice or transaction reference (optional)" className="rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-slate-950" />
+          {caseType === "dispute_charge" && (
+            <input type="number" min="0" step="0.01" value={requestedAmount} onChange={(event) => setRequestedAmount(event.target.value)} placeholder="Requested amount (USD)" className="rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-slate-950" />
+          )}
+          <label className="rounded-xl border border-dashed border-slate-300 px-4 py-3 text-sm text-slate-600 sm:col-span-2">
+            <span className="font-semibold text-slate-900">Supporting documents</span>
+            <input type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.doc,.docx" onChange={(event) => void handleAttachments(event.target.files)} className="mt-2 block w-full text-xs" />
+            {attachments.length > 0 && <span className="mt-2 block">{attachments.map((item) => item.name).join(", ")}</span>}
+          </label>
+        </div>
+
+        {message && <p className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">{message}</p>}
+        {submittedCase && (
+          <p className="mt-3 text-sm font-semibold text-emerald-700">Confirmation: {submittedCase.case_number}</p>
+        )}
+        <button type="button" onClick={() => void submitCase()} disabled={submitting} className="mt-5 rounded-xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60">
+          {submitting ? "Submitting..." : "Submit case"}
+        </button>
+      </section>
+    </div>
+  );
+}
+
+function ResolutionStatusPanel() {
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState<"client" | "carrier" | "guest">("guest");
+  const [cases, setCases] = useState<ResolutionCase[]>([]);
+  const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function loadCases() {
+    if (!email.trim()) {
+      setMessage("Enter the email used for your submission.");
+      return;
+    }
+    setLoading(true);
+    setMessage("");
+    try {
+      const results = await listResolutionCases(email.trim().toLowerCase(), role);
+      setCases(results);
+      setMessage(results.length ? "" : "No cases found for this email.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to load case status.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="mt-8 w-full text-slate-900 md:mt-10">
+      <section className="mx-auto max-w-4xl rounded-3xl border border-slate-200 bg-white p-6 shadow-[0_20px_80px_rgba(15,23,42,0.12)] md:p-8">
+        <p className="text-xs font-bold uppercase tracking-[0.24em] text-cyan-700">Resolution Center</p>
+        <h1 className="mt-3 text-3xl font-semibold md:text-4xl">My Disputes & Claims</h1>
+        <p className="mt-3 text-sm leading-7 text-slate-600">Enter the email and account type used for your submission to view case status.</p>
+
+        <div className="mt-6 grid gap-4 sm:grid-cols-[1fr_180px]">
+          <input
+            type="email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            placeholder="Email address"
+            className="rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-slate-950"
+          />
+          <select
+            value={role}
+            onChange={(event) => setRole(event.target.value as "client" | "carrier" | "guest")}
+            className="rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-slate-950"
+          >
+            <option value="guest">Guest</option>
+            <option value="client">Shipper</option>
+            <option value="carrier">Carrier</option>
+          </select>
+        </div>
+        <button type="button" onClick={() => void loadCases()} disabled={loading} className="mt-4 rounded-xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60">
+          {loading ? "Checking..." : "Check status"}
+        </button>
+        {message && <p className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">{message}</p>}
+
+        <div className="mt-6 space-y-3">
+          {cases.map((item) => (
+            <article key={item.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{item.case_number}</p>
+                  <p className="mt-2 text-base font-semibold text-slate-950">{item.subject}</p>
+                </div>
+                <span className="rounded-full border border-slate-300 bg-white px-3 py-1 text-xs font-semibold text-slate-700">
+                  {item.status.replaceAll("_", " ")}
+                </span>
+              </div>
+              {item.decision_message && <p className="mt-3 text-sm leading-6 text-slate-700">{item.decision_message}</p>}
+            </article>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ResourcesPanel(props: Readonly<{
+  section: ResourceSection;
+  onSelectSection: (section: ResourceSection) => void;
+}>) {
   const { section, onSelectSection } = props;
   const isEventsSelected = section === "events";
 
   return (
-    <div
-      className="mt-8 overflow-hidden rounded-[32px] border border-cyan-200/60 text-white shadow-[0_24px_80px_rgba(8,15,35,0.25)] md:mt-10"
-      style={{ backgroundImage: "url('/events-background.png')", backgroundPosition: "center", backgroundSize: "cover" }}
-    >
-      <div className="bg-slate-950/72 px-5 py-6 md:px-8 md:py-8">
-        <div className="space-y-8">
-          <div>
-            <h2 className="mt-3 text-3xl font-semibold text-white md:text-5xl">Events</h2>
-            <p className="mt-4 max-w-3xl text-sm leading-6 text-slate-200 md:text-base">Browse updates and announcements from LynkXpress.</p>
-          </div>
+    <div className="mt-8 space-y-6 md:mt-10">
+      <div
+        className="overflow-hidden rounded-[32px] border border-cyan-200/60 text-white shadow-[0_24px_80px_rgba(8,15,35,0.25)]"
+        style={{ backgroundImage: "url('/events-background.png')", backgroundPosition: "center", backgroundSize: "cover" }}
+      >
+        <div className="bg-slate-950/72 px-5 py-6 md:px-8 md:py-8">
+          <div className="space-y-8">
+            <div>
+              <h2 className="mt-3 text-3xl font-semibold text-white md:text-5xl">Events</h2>
+              <p className="mt-4 max-w-3xl text-sm leading-6 text-slate-200 md:text-base">Browse updates and announcements from LynkXpress.</p>
+            </div>
 
-          <div className="grid gap-6 lg:grid-cols-[0.38fr_0.62fr]">
-            <aside className="rounded-3xl border border-white/12 bg-white/10 p-5 backdrop-blur-sm">
-              <p className="text-xs font-bold uppercase tracking-[0.22em] text-cyan-100/80">Events List</p>
-              <div className="mt-4 space-y-3">
-                <button
-                  type="button"
-                  onClick={() => onSelectSection("events")}
-                  className={`w-full rounded-xl border px-4 py-3 text-left text-sm transition ${isEventsSelected ? "border-cyan-300 bg-white text-slate-950" : "border-white/15 bg-slate-950/35 text-slate-100 hover:bg-white/12"}`}
-                >
-                  AI Shipment System & Ship Manager Pro Released
-                </button>
-              </div>
-            </aside>
+            <div className="grid gap-6 lg:grid-cols-[0.38fr_0.62fr]">
+              <aside className="rounded-3xl border border-white/12 bg-white/10 p-5 backdrop-blur-sm">
+                <p className="text-xs font-bold uppercase tracking-[0.22em] text-cyan-100/80">Events List</p>
+                <div className="mt-4 space-y-3">
+                  <button
+                    type="button"
+                    onClick={() => onSelectSection("events")}
+                    className={`w-full rounded-xl border px-4 py-3 text-left text-sm transition ${isEventsSelected ? "border-cyan-300 bg-white text-slate-950" : "border-white/15 bg-slate-950/35 text-slate-100 hover:bg-white/12"}`}
+                  >
+                    AI Shipment System & Ship Manager Pro Released
+                  </button>
+                </div>
+                </aside>
 
-            <article className="rounded-3xl border border-white/12 bg-slate-950/50 p-6 shadow-sm backdrop-blur-sm md:p-8">
-              <h3 className="text-2xl font-bold text-white">AI Shipment System & Ship Manager Pro Released</h3>
-              <p className="mt-4 text-sm leading-7 text-slate-200 md:text-base">
-                LynkXpress has officially launched its new AI-powered shipment software alongside <strong className="font-semibold text-white">Ship Manager Pro</strong>, a major upgrade to its core logistics operations system.
-              </p>
-              <p className="mt-4 text-sm leading-7 text-slate-200 md:text-base">
-                The AI Shipment System introduces intelligent shipment processing, helping optimize load creation, carrier selection, and workflow efficiency across the platform. It is designed to reduce manual decision-making and improve overall operational speed through structured automation and data-driven logic.
-              </p>
-              <p className="mt-4 text-sm leading-7 text-slate-200 md:text-base">
-                <strong className="font-semibold text-white">Ship Manager Pro</strong> enhances shipment control and visibility for shippers, providing a centralized dashboard to manage active loads, monitor real-time status updates, assign carriers, and oversee end-to-end delivery performance within a single interface.
-              </p>
-              <p className="mt-4 text-sm leading-7 text-slate-200 md:text-base">
-                Together, these systems mark a significant step toward a more intelligent and fully integrated freight management ecosystem within LynkXpress.
-              </p>
-              <div className="mt-6 space-y-1 rounded-2xl border border-white/12 bg-white/10 p-4 text-sm text-slate-100">
-                <p>
-                  <strong className="font-semibold text-white">Released:</strong> June 2026
+              <article className="rounded-3xl border border-white/12 bg-slate-950/50 p-6 shadow-sm backdrop-blur-sm md:p-8">
+                <h3 className="text-2xl font-bold text-white">AI Shipment System & Ship Manager Pro Released</h3>
+                <p className="mt-4 text-sm leading-7 text-slate-200 md:text-base">
+                  LynkXpress has officially launched its new AI-powered shipment software alongside <strong className="font-semibold text-white">Ship Manager Pro</strong>, a major upgrade to its core logistics operations system.
                 </p>
-                <p>
-                  <strong className="font-semibold text-white">Status:</strong> Active across platform users
+                <p className="mt-4 text-sm leading-7 text-slate-200 md:text-base">
+                  The AI Shipment System introduces intelligent shipment processing, helping optimize load creation, carrier selection, and workflow efficiency across the platform. It is designed to reduce manual decision-making and improve overall operational speed through structured automation and data-driven logic.
                 </p>
-              </div>
-            </article>
+                <p className="mt-4 text-sm leading-7 text-slate-200 md:text-base">
+                  <strong className="font-semibold text-white">Ship Manager Pro</strong> enhances shipment control and visibility for shippers, providing a centralized dashboard to manage active loads, monitor real-time status updates, assign carriers, and oversee end-to-end delivery performance within a single interface.
+                </p>
+                <p className="mt-4 text-sm leading-7 text-slate-200 md:text-base">
+                  Together, these systems mark a significant step toward a more intelligent and fully integrated freight management ecosystem within LynkXpress.
+                </p>
+                <div className="mt-6 space-y-1 rounded-2xl border border-white/12 bg-white/10 p-4 text-sm text-slate-100">
+                  <p>
+                    <strong className="font-semibold text-white">Released:</strong> June 2026
+                  </p>
+                  <p>
+                    <strong className="font-semibold text-white">Status:</strong> Active across platform users
+                  </p>
+                </div>
+              </article>
+            </div>
           </div>
         </div>
       </div>
@@ -607,11 +841,25 @@ function ResourcesPanel(props: Readonly<{ section: ResourceSection; onSelectSect
   );
 }
 
-function AboutPanel(props: Readonly<{ onBackToHome: () => void }>) {
+function AboutPanel(props: Readonly<{
+  onBackToHome: () => void;
+  theme: AppearanceTheme;
+}>) {
   const styles = getAboutStyles();
 
   return (
-    <div className="mt-8 space-y-12 text-slate-900 md:mt-10">
+    <div className="about-particle-page mt-8 space-y-12 text-slate-900 md:mt-10" data-theme={props.theme}>
+      <section className="about-hero-image" aria-label="LynkXpress logistics network">
+        <div className="about-hero-image-overlay" />
+        <div className="about-hero-copy relative z-10 max-w-2xl text-white">
+          <p className="text-xs font-bold uppercase tracking-[0.28em] text-cyan-100">About LynkXpress</p>
+          <h1 className="mt-3 text-3xl font-semibold tracking-tight md:text-5xl">The road ahead is connected.</h1>
+          <p className="mt-4 max-w-xl text-sm leading-7 text-slate-100 md:text-base">
+            A logistics operating layer built for the people and freight moving through every mile.
+          </p>
+        </div>
+      </section>
+      <div className="about-details relative z-10">
       <div className="flex items-center justify-between gap-3">
         <div>
           <p className={`text-xs uppercase tracking-[0.22em] ${styles.label}`}>About Us</p>
@@ -751,6 +999,7 @@ function AboutPanel(props: Readonly<{ onBackToHome: () => void }>) {
           </p>
         </section>
 
+      </div>
       </div>
     </div>
   );
@@ -1070,10 +1319,13 @@ function PageShell(props: Readonly<{
   signupForm: SignupState;
   resourceSection: ResourceSection;
   submitting: SubmitState;
+  resolutionCaseType: ResolutionCaseType;
   onOpenLanding: () => void;
   onOpenPricing: () => void;
   onOpenResources: () => void;
   onOpenAbout: () => void;
+  onOpenResolution: (caseType: ResolutionCaseType) => void;
+  onOpenResolutionStatus: () => void;
   onToggleLoginMenu: () => void;
   onOpenRoleLogin: (role: LoginRole) => void;
   onCreateAccount: () => void;
@@ -1099,6 +1351,8 @@ function PageShell(props: Readonly<{
   onVerifySignupEmail: () => void;
   onBackToLanding: () => void;
 }>) {
+  const glowIntensity = DEFAULT_GLOW_INTENSITY;
+  const glowBackgroundRef = useRef<HTMLDivElement>(null);
   const {
     view,
     isAboutView,
@@ -1111,10 +1365,13 @@ function PageShell(props: Readonly<{
     signupForm,
     resourceSection,
     submitting,
+    resolutionCaseType,
     onOpenLanding,
     onOpenPricing,
     onOpenResources,
     onOpenAbout,
+    onOpenResolution,
+    onOpenResolutionStatus,
     onToggleLoginMenu,
     onOpenRoleLogin,
     onCreateAccount,
@@ -1142,14 +1399,52 @@ function PageShell(props: Readonly<{
 
   const isPricingView = view === "pricing";
   const isResourcesView = view === "resources";
+  const isResolutionView = view === "resolution" || view === "resolution_status";
+  const isAppearancePage = isAboutView || isResourcesView;
   const isLoginExperience = view === "login" || view === "forgot_password";
+  const appearanceTheme = isAboutView ? ABOUT_PAGE_THEME : RESOURCES_PAGE_THEME;
+
+  useEffect(() => {
+    if (!isAppearancePage) {
+      return;
+    }
+
+    let animationFrame = 0;
+    const updateGlowPosition = () => {
+      cancelAnimationFrame(animationFrame);
+      animationFrame = requestAnimationFrame(() => {
+        const scrollableHeight = document.documentElement.scrollHeight - window.innerHeight;
+        const scrollProgress = scrollableHeight > 0
+          ? Math.min(1, Math.max(0, window.scrollY / scrollableHeight))
+          : 0;
+        const background = glowBackgroundRef.current;
+        if (!background) {
+          return;
+        }
+
+        background.style.setProperty("--glow-scroll-x", `${scrollProgress * 12}vw`);
+        background.style.setProperty("--glow-scroll-y", `${scrollProgress * 8}vh`);
+        background.style.setProperty("--glow-scroll-hue", `${scrollProgress * 16}deg`);
+      });
+    };
+
+    updateGlowPosition();
+    window.addEventListener("scroll", updateGlowPosition, { passive: true });
+    window.addEventListener("resize", updateGlowPosition);
+    return () => {
+      cancelAnimationFrame(animationFrame);
+      window.removeEventListener("scroll", updateGlowPosition);
+      window.removeEventListener("resize", updateGlowPosition);
+    };
+  }, [isAppearancePage]);
+
   let mainClass = "relative min-h-screen overflow-hidden bg-[#020B16] text-white";
-  if (isAboutView) {
-    mainClass = "relative min-h-screen overflow-hidden bg-white text-slate-900";
+  if (isAppearancePage) {
+    mainClass = "relative min-h-screen overflow-hidden bg-transparent text-slate-900";
+  } else if (isResolutionView) {
+    mainClass = "relative min-h-screen overflow-hidden bg-slate-100 text-slate-900";
   } else if (isPricingView) {
     mainClass = "relative min-h-screen overflow-hidden bg-black text-white";
-  } else if (isResourcesView) {
-    mainClass = "relative min-h-screen overflow-hidden bg-white text-slate-900";
   } else if (isLoginExperience) {
     mainClass = "relative min-h-screen overflow-hidden bg-[#111827] text-slate-900";
   }
@@ -1158,7 +1453,22 @@ function PageShell(props: Readonly<{
   if (view === "about") {
     content = (
       <div className="w-full px-0 md:px-2 lg:px-4">
-        <AboutPanel onBackToHome={onBackToLanding} />
+        <AboutPanel
+          onBackToHome={onBackToLanding}
+          theme={appearanceTheme}
+        />
+      </div>
+    );
+  } else if (view === "resolution") {
+    content = (
+      <div className="w-full px-0 md:px-2 lg:px-4">
+        <ResolutionCenterPanel initialCaseType={resolutionCaseType} />
+      </div>
+    );
+  } else if (view === "resolution_status") {
+    content = (
+      <div className="w-full px-0 md:px-2 lg:px-4">
+        <ResolutionStatusPanel />
       </div>
     );
   } else if (view === "pricing") {
@@ -1170,7 +1480,10 @@ function PageShell(props: Readonly<{
   } else if (view === "resources") {
     content = (
       <div className="w-full px-0 md:px-2 lg:px-4">
-        <ResourcesPanel section={resourceSection} onSelectSection={onSelectResourceSection} />
+        <ResourcesPanel
+          section={resourceSection}
+          onSelectSection={onSelectResourceSection}
+        />
       </div>
     );
   } else {
@@ -1238,12 +1551,19 @@ function PageShell(props: Readonly<{
   }
 
   return (
-    <main className={mainClass}>
+    <main className={mainClass} data-page-theme={isAppearancePage ? appearanceTheme : undefined}>
       {!isAboutView && !isPricingView && !isResourcesView && !isLoginExperience && (
         <>
           <GlobeMarketJourneyBackground />
           <div className="absolute inset-0 bg-gradient-to-b from-[#020B16]/35 via-[#020B16]/70 to-[#020B16]/90" />
         </>
+      )}
+
+      {isAppearancePage && (
+        <div ref={glowBackgroundRef} className="golden-bg" data-theme={appearanceTheme} aria-hidden="true">
+          <span style={{ opacity: glowIntensity / 100 }} />
+          <span style={{ opacity: glowIntensity / 100 }} />
+        </div>
       )}
 
       {isLoginExperience && <div className="auth-control-grid absolute inset-0" />}
@@ -1264,7 +1584,7 @@ function PageShell(props: Readonly<{
 
       <div className="relative z-10 flex min-h-screen flex-col">
         <TopNavigation
-          isAboutView={isAboutView}
+          isAboutView={isAppearancePage}
           activeSessionName={activeSessionName}
           loginMenuOpen={loginMenuOpen}
           loginMenuRef={loginMenuRef}
@@ -1272,6 +1592,8 @@ function PageShell(props: Readonly<{
           onOpenPricing={onOpenPricing}
           onOpenResources={onOpenResources}
           onOpenAbout={onOpenAbout}
+          onOpenResolution={onOpenResolution}
+          onOpenResolutionStatus={onOpenResolutionStatus}
           onToggleLoginMenu={onToggleLoginMenu}
           onOpenRoleLogin={onOpenRoleLogin}
           onCreateAccount={onCreateAccount}
@@ -1293,6 +1615,7 @@ export default function Home() {
   const [loginMenuOpen, setLoginMenuOpen] = useState(false);
   const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [resourceSection, setResourceSection] = useState<ResourceSection>("events");
+  const [resolutionCaseType, setResolutionCaseType] = useState<ResolutionCaseType>("dispute_charge");
   const [loginForm, setLoginForm] = useState<LoginState>({
     email: "",
     password: "",
@@ -1367,6 +1690,17 @@ export default function Home() {
     setView("resources");
     setResourceSection("events");
     setMessage("");
+  }
+
+  function openResolution(caseType: ResolutionCaseType) {
+    setResolutionCaseType(caseType);
+    setMessage("");
+    setView("resolution");
+  }
+
+  function openResolutionStatus() {
+    setMessage("");
+    setView("resolution_status");
   }
 
   useEffect(() => {
@@ -1679,6 +2013,9 @@ export default function Home() {
         onOpenPricing={openPricing}
         onOpenResources={openResources}
         onOpenAbout={openAboutSection}
+        onOpenResolution={openResolution}
+        onOpenResolutionStatus={openResolutionStatus}
+        resolutionCaseType={resolutionCaseType}
         onToggleLoginMenu={() => setLoginMenuOpen((prev) => !prev)}
         onOpenRoleLogin={openRoleLogin}
         onCreateAccount={() => {

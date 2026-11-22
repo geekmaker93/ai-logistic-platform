@@ -115,6 +115,7 @@ SIGNUP_EMAIL_ALLOW_RESEND_FALLBACK = os.getenv("SIGNUP_EMAIL_ALLOW_RESEND_FALLBA
 PASSWORD_RESET_TOKEN_TTL_MINUTES = int(os.getenv("PASSWORD_RESET_TOKEN_TTL_MINUTES", "60"))
 SHIPPER_REVIEW_PERIOD_HOURS = float(os.getenv("SHIPPER_REVIEW_PERIOD_HOURS", "0"))
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "").strip()
+SUPPORT_TEAM_EMAIL = os.getenv("SUPPORT_TEAM_EMAIL", SIGNUP_SMTP_FROM_EMAIL).strip()
 DIDIT_API_KEY = os.getenv("DIDIT_API_KEY", "").strip()
 DIDIT_WORKFLOW_ID = os.getenv("DIDIT_WORKFLOW_ID", "").strip()
 DIDIT_API_BASE_URL = os.getenv("DIDIT_API_BASE_URL", "https://verification.didit.me/v3").rstrip("/")
@@ -635,6 +636,60 @@ class BillingPayoutAccountStatusResponse(BaseModel):
 	onboarding_complete: bool
 
 
+class ResolutionAttachmentInput(BaseModel):
+	name: str = Field(min_length=1, max_length=180)
+	mime_type: str = Field(min_length=1, max_length=100)
+	base64: str = Field(min_length=1, max_length=9000000)
+
+
+class ResolutionCaseCreateRequest(BaseModel):
+	case_type: Literal["dispute_charge", "freight_claim", "shipment_issue"]
+	contact_name: str = Field(min_length=2, max_length=120)
+	email: str = Field(min_length=4, max_length=320)
+	role: Literal["client", "carrier", "guest"] = "guest"
+	phone: str | None = Field(default=None, max_length=32)
+	subject: str = Field(min_length=5, max_length=180)
+	description: str = Field(min_length=20, max_length=5000)
+	shipment_id: str | None = Field(default=None, max_length=64)
+	payment_intent_id: str | None = Field(default=None, max_length=120)
+	transaction_reference: str | None = Field(default=None, max_length=120)
+	requested_amount_usd: float | None = Field(default=None, ge=0, le=1000000)
+	attachments: list[ResolutionAttachmentInput] = Field(default_factory=list, max_length=5)
+
+
+class ResolutionCaseResponse(BaseModel):
+	id: str
+	case_number: str
+	case_type: Literal["dispute_charge", "freight_claim", "shipment_issue"]
+	contact_name: str
+	email: str
+	role: Literal["client", "carrier", "guest"]
+	phone: str | None
+	subject: str
+	description: str
+	shipment_id: str | None
+	payment_intent_id: str | None
+	transaction_reference: str | None
+	requested_amount_usd: float | None
+	status: Literal["submitted", "under_review", "more_information_required", "approved", "partially_approved", "rejected"]
+	decision: Literal["approved", "partially_approved", "rejected", "more_information_required"] | None
+	decision_amount_usd: float | None
+	decision_message: str | None
+	attachments: list[ResolutionAttachmentInput]
+	internal_notes: str | None
+	created_at: datetime
+	updated_at: datetime
+	decided_at: datetime | None
+
+
+class ResolutionCaseUpdateRequest(BaseModel):
+	status: Literal["submitted", "under_review", "more_information_required", "approved", "partially_approved", "rejected"]
+	decision: Literal["approved", "partially_approved", "rejected", "more_information_required"] | None = None
+	decision_amount_usd: float | None = Field(default=None, ge=0, le=1000000)
+	decision_message: str | None = Field(default=None, max_length=5000)
+	internal_notes: str | None = Field(default=None, max_length=5000)
+
+
 class AuthProfileUpdateRequest(BaseModel):
 	full_name: str | None = Field(default=None, min_length=2, max_length=120)
 	company_name: str | None = Field(default=None, min_length=2, max_length=120)
@@ -880,6 +935,33 @@ class ShipmentModel(Base):
 	pod_uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 	pod_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 	payout_release_eligible_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ResolutionCaseModel(Base):
+	__tablename__ = "resolution_cases"
+
+	id: Mapped[str] = mapped_column(String(64), primary_key=True)
+	case_number: Mapped[str] = mapped_column(String(32), nullable=False, unique=True, index=True)
+	case_type: Mapped[str] = mapped_column(String(32), nullable=False)
+	contact_name: Mapped[str] = mapped_column(String(120), nullable=False)
+	email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
+	role: Mapped[str] = mapped_column(String(16), nullable=False)
+	phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+	subject: Mapped[str] = mapped_column(String(180), nullable=False)
+	description: Mapped[str] = mapped_column(Text, nullable=False)
+	shipment_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+	payment_intent_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+	transaction_reference: Mapped[str | None] = mapped_column(String(120), nullable=True)
+	requested_amount_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+	status: Mapped[str] = mapped_column(String(32), nullable=False, default="submitted")
+	decision: Mapped[str | None] = mapped_column(String(32), nullable=True)
+	decision_amount_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+	decision_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+	internal_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+	attachments: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
+	created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+	updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+	decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class RouteOptionRecordModel(Base):
@@ -2337,6 +2419,94 @@ def require_admin_api_key(x_admin_key: str | None) -> None:
 		raise HTTPException(status_code=503, detail="Admin access is not configured.")
 	if not x_admin_key or not hmac.compare_digest(x_admin_key, ADMIN_API_KEY):
 		raise HTTPException(status_code=403, detail="Admin access denied.")
+
+
+def serialize_resolution_case(record: ResolutionCaseModel) -> ResolutionCaseResponse:
+	return ResolutionCaseResponse(
+		id=record.id,
+		case_number=record.case_number,
+		case_type=cast(Literal["dispute_charge", "freight_claim", "shipment_issue"], record.case_type),
+		contact_name=record.contact_name,
+		email=record.email,
+		role=cast(Literal["client", "carrier", "guest"], record.role),
+		phone=record.phone,
+		subject=record.subject,
+		description=record.description,
+		shipment_id=record.shipment_id,
+		payment_intent_id=record.payment_intent_id,
+		transaction_reference=record.transaction_reference,
+		requested_amount_usd=record.requested_amount_usd,
+		status=cast(Literal["submitted", "under_review", "more_information_required", "approved", "partially_approved", "rejected"], record.status),
+		decision=cast(Literal["approved", "partially_approved", "rejected", "more_information_required"] | None, record.decision),
+		decision_amount_usd=record.decision_amount_usd,
+		decision_message=record.decision_message,
+		attachments=[ResolutionAttachmentInput(**item) for item in (record.attachments or [])],
+		internal_notes=record.internal_notes,
+		created_at=record.created_at,
+		updated_at=record.updated_at,
+		decided_at=record.decided_at,
+	)
+
+
+def generate_resolution_case_number(case_type: str) -> str:
+	prefix = {
+		"dispute_charge": "DSP",
+		"freight_claim": "CLM",
+		"shipment_issue": "ISS",
+	}.get(case_type, "DSP")
+	with get_session() as db:
+		count = db.query(ResolutionCaseModel).filter(ResolutionCaseModel.case_type == case_type).count()
+	return f"LYNX-{prefix}-{count + 125:06d}"
+
+
+def send_resolution_confirmation(record: ResolutionCaseModel) -> None:
+	html_content = (
+		"<div style='font-family:Arial,sans-serif;max-width:600px;margin:auto;padding:24px;color:#0f172a'>"
+		f"<h2>Resolution case received: {record.case_number}</h2>"
+		f"<p>Thank you, {record.contact_name}. Your {record.case_type.replace('_', ' ')} has been submitted.</p>"
+		"<p>Our support team will review the information and contact you if additional documentation is required.</p>"
+		"</div>"
+	)
+	text_content = (
+		f"Resolution case received: {record.case_number}\n\n"
+		f"Thank you, {record.contact_name}. Your {record.case_type.replace('_', ' ')} has been submitted."
+	)
+	send_brevo_email(record.email, f"LynkXpress resolution case received - {record.case_number}", html_content, text_content)
+
+
+def send_resolution_team_notification(record: ResolutionCaseModel) -> None:
+	if not SUPPORT_TEAM_EMAIL:
+		return
+	html_content = (
+		"<div style='font-family:Arial,sans-serif;max-width:600px;margin:auto;padding:24px;color:#0f172a'>"
+		f"<h2>New resolution case: {record.case_number}</h2>"
+		f"<p><strong>Type:</strong> {record.case_type.replace('_', ' ')}</p>"
+		f"<p><strong>Customer:</strong> {record.contact_name} ({record.email})</p>"
+		f"<p><strong>Subject:</strong> {record.subject}</p>"
+		f"<p><strong>Description:</strong> {record.description}</p>"
+		"</div>"
+	)
+	text_content = (
+		f"New resolution case: {record.case_number}\n"
+		f"Type: {record.case_type.replace('_', ' ')}\n"
+		f"Customer: {record.contact_name} ({record.email})\n"
+		f"Subject: {record.subject}\n"
+		f"Description: {record.description}"
+	)
+	send_brevo_email(SUPPORT_TEAM_EMAIL, f"New LynkXpress resolution case - {record.case_number}", html_content, text_content)
+
+
+def send_resolution_decision(record: ResolutionCaseModel) -> None:
+	label = (record.decision or record.status).replace("_", " ").title()
+	html_content = (
+		"<div style='font-family:Arial,sans-serif;max-width:600px;margin:auto;padding:24px;color:#0f172a'>"
+		f"<h2>Resolution update: {record.case_number}</h2>"
+		f"<p><strong>Decision:</strong> {label}</p>"
+		f"<p>{record.decision_message or 'Your case status has been updated.'}</p>"
+		"</div>"
+	)
+	text_content = f"Resolution update: {record.case_number}\nDecision: {label}\n{record.decision_message or 'Your case status has been updated.'}"
+	send_brevo_email(record.email, f"LynkXpress decision for {record.case_number}", html_content, text_content)
 
 
 def serialize_signup_identity_submission_summary(
@@ -4179,6 +4349,125 @@ def list_signup_applications(
 		return [SignupApplicationSummaryResponse(user_id=user.id, **user_to_signup_application(user).model_dump()) for user in users]
 
 
+@app.post("/resolution/cases", response_model=ResolutionCaseResponse)
+def create_resolution_case(payload: ResolutionCaseCreateRequest) -> ResolutionCaseResponse:
+	email = normalize_email(payload.email)
+	if not is_valid_email(email):
+		raise HTTPException(status_code=400, detail="Enter a valid email address.")
+
+	now = utc_now()
+	case_number = generate_resolution_case_number(payload.case_type)
+	record = ResolutionCaseModel(
+		id=uuid4().hex,
+		case_number=case_number,
+		case_type=payload.case_type,
+		contact_name=payload.contact_name.strip(),
+		email=email,
+		role=payload.role,
+		phone=payload.phone.strip() if payload.phone else None,
+		subject=payload.subject.strip(),
+		description=payload.description.strip(),
+		shipment_id=payload.shipment_id.strip() if payload.shipment_id else None,
+		payment_intent_id=payload.payment_intent_id.strip() if payload.payment_intent_id else None,
+		transaction_reference=payload.transaction_reference.strip() if payload.transaction_reference else None,
+		requested_amount_usd=payload.requested_amount_usd,
+		status="submitted",
+		decision=None,
+		decision_amount_usd=None,
+		decision_message=None,
+		internal_notes=None,
+		attachments=[item.model_dump() for item in payload.attachments],
+		created_at=now,
+		updated_at=now,
+		decided_at=None,
+	)
+
+	with get_session() as db:
+		db.add(record)
+		db.commit()
+		db.refresh(record)
+		response = serialize_resolution_case(record)
+
+	for sender in (send_resolution_team_notification, send_resolution_confirmation):
+		try:
+			sender(record)
+		except Exception as exc:
+			print("[backend] Resolution email notification failed:", exc)
+
+	return response
+
+
+@app.get("/resolution/cases", response_model=list[ResolutionCaseResponse])
+def list_customer_resolution_cases(
+	email: str = Query(min_length=4, max_length=320),
+	role: Literal["client", "carrier", "guest"] = Query(default="guest"),
+) -> list[ResolutionCaseResponse]:
+	normalized_email = normalize_email(email)
+	with get_session() as db:
+		rows = db.scalars(
+			select(ResolutionCaseModel)
+			.where(ResolutionCaseModel.email == normalized_email)
+			.where(ResolutionCaseModel.role == role)
+			.order_by(ResolutionCaseModel.created_at.desc())
+		).all()
+		return [serialize_resolution_case(record) for record in rows]
+
+
+@app.get("/admin/resolution/cases", response_model=list[ResolutionCaseResponse])
+def list_resolution_cases_admin(
+	x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+) -> list[ResolutionCaseResponse]:
+	require_admin_api_key(x_admin_key)
+	with get_session() as db:
+		rows = db.scalars(select(ResolutionCaseModel).order_by(ResolutionCaseModel.created_at.desc())).all()
+		return [serialize_resolution_case(record) for record in rows]
+
+
+@app.get("/admin/resolution/cases/{case_id}", response_model=ResolutionCaseResponse)
+def get_resolution_case_admin(
+	case_id: str,
+	x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+) -> ResolutionCaseResponse:
+	require_admin_api_key(x_admin_key)
+	with get_session() as db:
+		record = db.scalar(select(ResolutionCaseModel).where(ResolutionCaseModel.id == case_id))
+		if record is None:
+			raise HTTPException(status_code=404, detail="Resolution case not found.")
+		return serialize_resolution_case(record)
+
+
+@app.patch("/admin/resolution/cases/{case_id}", response_model=ResolutionCaseResponse)
+def update_resolution_case_admin(
+	case_id: str,
+	payload: ResolutionCaseUpdateRequest,
+	x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+) -> ResolutionCaseResponse:
+	require_admin_api_key(x_admin_key)
+	now = utc_now()
+	with get_session() as db:
+		record = db.scalar(select(ResolutionCaseModel).where(ResolutionCaseModel.id == case_id))
+		if record is None:
+			raise HTTPException(status_code=404, detail="Resolution case not found.")
+		record.status = payload.status
+		record.decision = payload.decision
+		record.decision_amount_usd = payload.decision_amount_usd
+		record.decision_message = payload.decision_message
+		record.internal_notes = payload.internal_notes
+		record.updated_at = now
+		record.decided_at = now if payload.decision else None
+		db.commit()
+		db.refresh(record)
+		response = serialize_resolution_case(record)
+
+	if payload.decision:
+		try:
+			send_resolution_decision(record)
+		except Exception as exc:
+			print("[backend] Resolution decision email failed:", exc)
+
+	return response
+
+
 @app.post("/admin/signup-applications/{user_id}/approve", response_model=SignupApplicationResponse)
 def approve_signup_application(
 	user_id: str,
@@ -4548,8 +4837,11 @@ def create_billing_checkout_session(
 	if not price_id:
 		raise HTTPException(status_code=503, detail=f"Stripe price is not configured for role: {role}.")
 
-	default_return_url = f"{FRONTEND_BASE_URL.rstrip('/')}/{role}?billing=success"
-	return_url = (payload.return_url or payload.success_url or default_return_url).strip()
+	frontend_role_path = "carrier" if role == "carrier" else "client"
+	default_success_url = f"{FRONTEND_BASE_URL.rstrip('/')}/{frontend_role_path}?billing=success"
+	default_cancel_url = f"{FRONTEND_BASE_URL.rstrip('/')}/{frontend_role_path}?billing=cancel"
+	success_url = (payload.success_url or payload.return_url or default_success_url).strip()
+	cancel_url = (payload.cancel_url or default_cancel_url).strip()
 
 	with get_session() as db:
 		user = get_user_by_identity(db, email, role, require_subscription=False)
@@ -4557,18 +4849,17 @@ def create_billing_checkout_session(
 
 		session = stripe.checkout.Session.create(  # type: ignore[union-attr]
 			mode="subscription",
-			ui_mode="embedded",
 			customer=customer_id,
 			line_items=[{"price": price_id, "quantity": 1}],
-			return_url=return_url,
+			success_url=success_url,
+			cancel_url=cancel_url,
 			allow_promotion_codes=True,
 			metadata={"user_id": user.id, "role": user.role},
 		)
 
-		client_secret = getattr(session, "client_secret", None)
-		if not client_secret:
-			raise HTTPException(status_code=502, detail="Stripe embedded checkout session did not return a client secret.")
-		return BillingCheckoutResponse(client_secret=client_secret, checkout_url="")
+		if not session.url:
+			raise HTTPException(status_code=502, detail="Stripe checkout session did not return a URL.")
+		return BillingCheckoutResponse(client_secret=None, checkout_url=session.url)
 
 
 @app.post("/shipments/{shipment_id}/payment-checkout", response_model=BillingCheckoutResponse)

@@ -137,6 +137,40 @@ export type BillingPayoutAccountStatus = {
   onboarding_complete: boolean;
 };
 
+export type ResolutionCaseType = "dispute_charge" | "freight_claim" | "shipment_issue";
+export type ResolutionCaseStatus = "submitted" | "under_review" | "more_information_required" | "approved" | "partially_approved" | "rejected";
+
+export type ResolutionAttachment = {
+  name: string;
+  mime_type: string;
+  base64: string;
+};
+
+export type ResolutionCase = {
+  id: string;
+  case_number: string;
+  case_type: ResolutionCaseType;
+  contact_name: string;
+  email: string;
+  role: "client" | "carrier" | "guest";
+  phone: string | null;
+  subject: string;
+  description: string;
+  shipment_id: string | null;
+  payment_intent_id: string | null;
+  transaction_reference: string | null;
+  requested_amount_usd: number | null;
+  status: ResolutionCaseStatus;
+  decision: "approved" | "partially_approved" | "rejected" | "more_information_required" | null;
+  decision_amount_usd: number | null;
+  decision_message: string | null;
+  attachments: ResolutionAttachment[];
+  internal_notes: string | null;
+  created_at: string;
+  updated_at: string;
+  decided_at: string | null;
+};
+
 export type DispatchMatch = {
   carrier_id: string;
   carrier_name: string;
@@ -668,6 +702,31 @@ export function createPayoutOnboardingSession(
 export function getPayoutAccountStatus(email: string) {
   const query = new URLSearchParams({ email, role: "carrier" }).toString();
   return request<BillingPayoutAccountStatus>(`/billing/payout-account-status?${query}`);
+}
+
+export function createResolutionCase(payload: {
+  case_type: ResolutionCaseType;
+  contact_name: string;
+  email: string;
+  role: "client" | "carrier" | "guest";
+  phone?: string | null;
+  subject: string;
+  description: string;
+  shipment_id?: string | null;
+  payment_intent_id?: string | null;
+  transaction_reference?: string | null;
+  requested_amount_usd?: number | null;
+  attachments?: ResolutionAttachment[];
+}) {
+  return request<ResolutionCase>("/resolution/cases", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function listResolutionCases(email: string, role: "client" | "carrier" | "guest") {
+  const query = new URLSearchParams({ email, role }).toString();
+  return request<ResolutionCase[]>(`/resolution/cases?${query}`);
 }
 
 export function updateUserProfile(
