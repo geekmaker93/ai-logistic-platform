@@ -19,6 +19,13 @@ class BillingPlanTests(unittest.TestCase):
 
 		self.assertEqual(shipper_plan.price_usd, 25.00)
 
+	def test_shipper_plan_accepts_configured_live_price_id(self) -> None:
+		with patch("main.STRIPE_CLIENT_PRICE_ID", "price_1TiMw4DayLwbDNok4Cy3rFR1"):
+			plans = get_subscription_plans()
+
+		shipper_plan = next(plan for plan in plans if plan.role == "client")
+		self.assertEqual(shipper_plan.price_id, "price_1TiMw4DayLwbDNok4Cy3rFR1")
+
 
 if __name__ == "__main__":
 	unittest.main()
