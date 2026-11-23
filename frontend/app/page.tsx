@@ -850,6 +850,11 @@ function AboutPanel(props: Readonly<{
   return (
     <div className="about-particle-page mt-8 space-y-12 text-slate-900 md:mt-10" data-theme={props.theme}>
       <section className="about-hero-image" aria-label="LynkXpress logistics network">
+        <img
+          src="/truck.png"
+          alt="Semi truck traveling through a connected logistics network"
+          className="about-hero-image-photo"
+        />
         <div className="about-hero-image-overlay" />
         <div className="about-hero-copy relative z-10 max-w-2xl text-white">
           <p className="text-xs font-bold uppercase tracking-[0.28em] text-cyan-100">About LynkXpress</p>
