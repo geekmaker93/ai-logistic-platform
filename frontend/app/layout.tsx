@@ -3,8 +3,21 @@ import AuthInactivityWatcher from "@/app/components/auth-inactivity-watcher";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "LynkXpress",
-  description: "AI-powered logistics workflow platform",
+  title: "LynkXpress | Freight & Logistics Platform",
+  description:
+    "LynkXpress connects shippers and carriers through an innovative freight logistics platform. Manage shipments, compare carrier quotes, track deliveries, and simplify transportation.",
+  applicationName: "LynkXpress",
+  openGraph: {
+    title: "LynkXpress",
+    description: "Freight and logistics technology.",
+    siteName: "LynkXpress",
+    type: "website",
+  },
+  twitter: {
+    card: "summary",
+    title: "LynkXpress",
+    description: "Freight and logistics technology.",
+  },
 };
 
 export default function RootLayout({
