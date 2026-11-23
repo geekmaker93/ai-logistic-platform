@@ -3,7 +3,7 @@ import AuthInactivityWatcher from "@/app/components/auth-inactivity-watcher";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "LynkXpress | Freight & Logistics Platform",
+  title: "LynkXpress",
   description:
     "LynkXpress connects shippers and carriers through an innovative freight logistics platform. Manage shipments, compare carrier quotes, track deliveries, and simplify transportation.",
   applicationName: "LynkXpress",
