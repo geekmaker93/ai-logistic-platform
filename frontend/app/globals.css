@@ -69,17 +69,32 @@ textarea:disabled {
 }
 
 .journey-globe-stage {
-  z-index: 2;
-  opacity: 1;
+  animation: journey-globe-stage 18s ease-in-out infinite;
   transform-origin: center center;
 }
 
 .journey-globe-stage > svg {
-  display: block;
+  display: none;
 }
 
 .journey-textured-globe {
-  display: none;
+  position: relative;
+  width: min(52vw, 430px);
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: 50%;
+  background-image: url("https://cdn.21st.dev/assets/mirror/f2/f2fe23d0c6a8406962e4c5ef969e13dc9de3faf37d3e7258a1067173325b254f.jpg");
+  background-position: left center;
+  background-repeat: repeat-x;
+  background-size: auto 100%;
+  box-shadow:
+    0 0 20px rgba(255, 255, 255, 0.2),
+    -5px 0 8px #c3f4ff inset,
+    15px 2px 25px #000 inset,
+    -24px -2px 34px rgba(195, 244, 255, 0.6) inset,
+    250px 0 44px rgba(0, 0, 0, 0.4) inset,
+    150px 0 38px rgba(0, 0, 0, 0.67) inset;
+  animation: journey-textured-globe-rotate 30s linear infinite;
 }
 
 .journey-textured-globe::after {
@@ -121,7 +136,9 @@ textarea:disabled {
 }
 
 .journey-map-stage {
-  display: none;
+  animation: journey-map-stage 18s ease-in-out infinite;
+  opacity: 0;
+  transform-origin: center center;
 }
 
 .journey-map-frame {
